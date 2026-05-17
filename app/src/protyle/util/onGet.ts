@@ -229,6 +229,52 @@ const setHTML = (options: {
     if (options.action.includes(Constants.CB_GET_BACKLINK)) {
         foldPassiveType(options.expand, protyle.wysiwyg.element);
     }
+    // Focus mode visual unfold: show children of focused block without changing fold attribute
+    if (protyle.block.showAll && protyle.block.id !== protyle.block.rootID) {
+        const focusedBlock = protyle.wysiwyg.element.querySelector(`:scope > [data-node-id="${protyle.block.id}"]`) as HTMLElement;
+        if (focusedBlock) {
+            focusedBlock.classList.add("protyle-wysiwyg--focus-unfold");
+            
+            // Check if the block is folded
+            const isFolded = focusedBlock.getAttribute("fold") === "1";
+            const blockType = focusedBlock.getAttribute("data-type");
+            
+            // For folded headings, we need to fetch children via API since they're not in DOM
+            if (isFolded && blockType === "NodeHeading") {
+                fetchPost("/api/block/getHeadingChildrenDOM", {
+                    id: protyle.block.id,
+                    removeFoldAttr: true, // Remove fold attributes so children appear normal
+                }, (response) => {
+                    if (response.code === 0 && response.data) {
+                        // Parse the response and insert only children (not the heading itself)
+                        // The API returns [heading, child1, child2, ...] - heading is FIRST
+                        const template = document.createElement("template");
+                        template.innerHTML = response.data;
+                        const allElements = Array.from(template.content.children);
+                        
+                        // Skip the first element (heading) and insert children in reverse order
+                        // to maintain correct sequence when inserting after the focused block
+                        allElements.slice(1).reverse().forEach((child: Element) => {
+                            // Mark children for cleanup when exiting focus mode
+                            child.setAttribute("data-focus-unfold-child", "true");
+                            focusedBlock.insertAdjacentElement("afterend", child);
+                        });
+                        
+                        // Process the newly added content
+                        const parentElement = focusedBlock.parentElement;
+                        if (parentElement) {
+                            processRender(parentElement);
+                            highlightRender(parentElement);
+                            avRender(parentElement, protyle);
+                            blockRender(protyle, parentElement);
+                        }
+                    }
+                });
+            }
+            // For folded list items (.li), the CSS will handle showing children
+            // For other folded blocks (list, bq, code-block, etc.), CSS will handle showing children
+        }
+    }
     processRender(protyle.wysiwyg.element);
     highlightRender(protyle.wysiwyg.element);
     avRender(protyle.wysiwyg.element, protyle);
