@@ -76,12 +76,10 @@ export class Gutter {
         if (isMac()) {
             this.gutterTip = window.siyuan.languages.gutterTip.replace("⌥→", updateHotkeyAfterTip(window.siyuan.config.keymap.general.enter.custom, "/"))
                 .replace("⌘↑", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.collapse.custom, "/"))
-                .replace("⌥⌘↑", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.foldRecursive.custom, "/"))
                 .replace("⌥⌘A", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.attr.custom, "/"));
         } else {
             this.gutterTip = window.siyuan.languages.gutterTip.replace("⌥→", updateHotkeyAfterTip(window.siyuan.config.keymap.general.enter.custom, "/"))
                 .replace("⌘↑", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.collapse.custom, "/"))
-                .replace("⌥⌘↑", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.foldRecursive.custom, "/"))
                 .replace("⌥⌘A", updateHotkeyAfterTip(window.siyuan.config.keymap.editor.general.attr.custom, "/"))
                 .replace(/⌘/g, "Ctrl+").replace(/⌥/g, "Alt+").replace(/⇧/g, "Shift+").replace(/⌃/g, "Ctrl+");
         }
@@ -2047,16 +2045,18 @@ export class Gutter {
                     focusBlock(nodeElement);
                 }
             }).element);
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "foldRecursive",
-                icon: "iconFoldUnFold",
-                label: window.siyuan.languages.foldRecursive || "Fold/Expand recursively",
-                accelerator: window.siyuan.config.keymap.editor.general.foldRecursive?.custom,
-                click() {
-                    foldBlocksRecursively(protyle, [nodeElement]);
-                    focusBlock(nodeElement);
-                }
-            }).element);
+            if (["NodeHeading", "NodeListItem", "NodeBlockquote", "NodeCallout", "NodeSuperBlock"].includes(type)) {
+                window.siyuan.menus.menu.append(new MenuItem({
+                    id: "foldRecursive",
+                    icon: "iconListTree",
+                    label: window.siyuan.languages.foldRecursive,
+                    accelerator: window.siyuan.config.keymap.editor.general.foldRecursive?.custom,
+                    click() {
+                        foldBlocksRecursively(protyle, [nodeElement]);
+                        focusBlock(nodeElement);
+                    }
+                }).element);
+            }
             if (!protyle.disabled) {
                 window.siyuan.menus.menu.append(new MenuItem({
                     id: "attr",

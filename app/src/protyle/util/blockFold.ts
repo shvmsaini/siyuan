@@ -94,25 +94,24 @@ export const setFold = (protyle: IProtyle, nodeElement: Element, isOpen?: boolea
     return {fold: !hasFold ? 1 : 0, undoOperations, doOperations};
 };
 
+const isFoldable = (el: Element) => {
+    const type = el.getAttribute("data-type");
+    return type === "NodeHeading" ||
+        (type === "NodeCallout" && el.querySelector(".callout-content").childElementCount > 1) ||
+        ((type === "NodeListItem" || type === "NodeBlockquote" || type === "NodeSuperBlock") && el.childElementCount > 3);
+};
+
 export const foldBlocksRecursively = (protyle: IProtyle, nodeElements: Element[]) => {
-    const doOperations: IOperation[] = [];
-    const undoOperations: IOperation[] = [];
-
     const result: Set<Element> = new Set();
-    const isFoldable = (el: Element) => {
-        const type = el.getAttribute("data-type");
-        return type === "NodeHeading" ||
-            ((type === "NodeListItem" || type === "NodeBlockquote" || type === "NodeSuperBlock") && el.childElementCount > 3);
-    };
-
     nodeElements.forEach(element => {
         if (isFoldable(element)) {
             result.add(element);
         }
-        element.querySelectorAll("[data-type='NodeHeading'], [data-type='NodeListItem'], [data-type='NodeBlockquote'], [data-type='NodeSuperBlock']").forEach(child => {
+        element.querySelectorAll("[data-type='NodeHeading'], .li, .bq, .sb, .callout").forEach(child => {
             if (isFoldable(child)) {
                 // Skip headings inside list items to avoid "double dot" and gutter icon conflicts
-                if (child.getAttribute("data-type") === "NodeHeading" && child.parentElement?.getAttribute("data-type") === "NodeListItem") {
+                if (child.getAttribute("data-type") === "NodeHeading" &&
+                    child.parentElement?.getAttribute("data-type") === "NodeListItem") {
                     return;
                 }
                 result.add(child);
@@ -128,10 +127,11 @@ export const foldBlocksRecursively = (protyle: IProtyle, nodeElements: Element[]
                     if (isFoldable(nextElement)) {
                         result.add(nextElement);
                     }
-                    nextElement.querySelectorAll("[data-type='NodeHeading'], [data-type='NodeListItem'], [data-type='NodeBlockquote'], [data-type='NodeSuperBlock']").forEach(child => {
+                    nextElement.querySelectorAll("[data-type='NodeHeading'], .li, .bq, .sb, .callout").forEach(child => {
                         if (isFoldable(child)) {
                             // Skip headings inside list items to avoid "double dot" and gutter icon conflicts
-                            if (child.getAttribute("data-type") === "NodeHeading" && child.parentElement?.getAttribute("data-type") === "NodeListItem") {
+                            if (child.getAttribute("data-type") === "NodeHeading" &&
+                                child.parentElement?.getAttribute("data-type") === "NodeListItem") {
                                 return;
                             }
                             result.add(child);
@@ -162,16 +162,11 @@ export const foldBlocksRecursively = (protyle: IProtyle, nodeElements: Element[]
         return 0;
     });
 
-    if (elementsToFold.length === 0) {
-        return;
-    }
-
+    const doOperations: IOperation[] = [];
+    const undoOperations: IOperation[] = [];
     elementsToFold.forEach(element => {
         const hasFold = element.getAttribute("fold") === "1";
-        if (isFoldAll && hasFold) {
-            return;
-        }
-        if (!isFoldAll && !hasFold) {
+        if ((isFoldAll && hasFold) || (!isFoldAll && !hasFold)) {
             return;
         }
         const ops = setFold(protyle, element, !isFoldAll, false, false, true);
@@ -188,22 +183,21 @@ export const foldBlocksRecursively = (protyle: IProtyle, nodeElements: Element[]
     }
 };
 
-export const foldRecursiveHotkey = (protyle: IProtyle, nodeElement: HTMLElement) => {
+export const getFoldBlock = (protyle: IProtyle, nodeElement: HTMLElement, cb: (elements: Element[]) => void) => {
     const selectElements = Array.from(protyle.wysiwyg.element.querySelectorAll(".protyle-wysiwyg--select"));
     if (selectElements.length > 0) {
-        foldBlocksRecursively(protyle, selectElements);
+        cb(selectElements);
     } else if (nodeElement) {
-        const nodeType = nodeElement.getAttribute("data-type");
         if (nodeElement.parentElement.getAttribute("data-type") === "NodeListItem") {
             if (nodeElement.parentElement.childElementCount > 3) {
-                foldBlocksRecursively(protyle, [nodeElement.parentElement]);
+                cb([nodeElement.parentElement]);
             } else {
-                foldBlocksRecursively(protyle, [nodeElement]);
+                cb([nodeElement]);
             }
-        } else if (nodeType === "NodeHeading") {
-            foldBlocksRecursively(protyle, [nodeElement]);
+        } else if (nodeElement.getAttribute("data-type") === "NodeHeading") {
+            cb([nodeElement]);
         } else {
-            foldBlocksRecursively(protyle, [getTopAloneElement(nodeElement)]);
+            cb([getTopAloneElement(nodeElement)]);
         }
     }
     return true;
