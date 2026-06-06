@@ -11,6 +11,9 @@ import {getDockByType, setTabPosition} from "../layout/tabUtil";
 ///#else
 import {MobileCustom} from "../mobile/dock/MobileCustom";
 /// #endif
+/// #if !BROWSER
+import {ipcRenderer} from "electron";
+/// #endif
 import {hasClosestByAttribute} from "../protyle/util/hasClosest";
 import {BlockPanel} from "../block/Panel";
 import {Setting} from "./Setting";
@@ -19,11 +22,13 @@ import {Constants} from "../constants";
 import {uninstall} from "./uninstall";
 import {addPluginDock, afterLoadPlugin, loadPlugins} from "./loader";
 import {normalizeStoragePath} from "../util/pathName";
+import {Kernel} from "./kernel";
 
 export class Plugin {
     private app: App;
     public i18n: IObject;
     public eventBus: EventBus;
+    public kernel: Kernel;
     public data: any = {};
     public displayName: string;
     public readonly name: string;
@@ -73,6 +78,11 @@ export class Plugin {
         this.i18n = options.i18n;
         this.displayName = options.displayName;
         this.eventBus = new EventBus(options.name);
+        this.kernel = new Kernel({
+            appId: options.app.appId,
+            name: options.name,
+            eventBus: this.eventBus,
+        });
 
         // https://github.com/siyuan-note/siyuan/issues/9943
         Object.defineProperty(this, "name", {
@@ -179,6 +189,14 @@ export class Plugin {
             console.error(`${this.name} - commands data is error and has been removed.`);
         } else {
             this.commands.push(command);
+            /// #if !BROWSER
+            if (command.globalCallback) {
+                ipcRenderer.send(Constants.SIYUAN_CMD, {
+                    cmd: "registerGlobalShortcut",
+                    accelerator: command.customHotkey
+                });
+            }
+            /// #endif
         }
     }
 

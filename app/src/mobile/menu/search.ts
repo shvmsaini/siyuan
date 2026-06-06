@@ -99,7 +99,8 @@ const replace = (element: Element, config: Config.IUILayoutTabSearchConfig, isAl
     });
 };
 
-const updateConfig = (element: Element, newConfig: Config.IUILayoutTabSearchConfig, config: Config.IUILayoutTabSearchConfig) => {
+const updateConfig = (element: Element, newConfig: Config.IUILayoutTabSearchConfig, config: Config.IUILayoutTabSearchConfig,
+                      clear = false) => {
     if (config.hasReplace !== newConfig.hasReplace) {
         if (newConfig.hasReplace) {
             element.querySelector('[data-type="toggle-replace"]').classList.add("toolbar__icon--active");
@@ -146,7 +147,9 @@ const updateConfig = (element: Element, newConfig: Config.IUILayoutTabSearchConf
     } else {
         searchIncludeElement.setAttribute("disabled", "disabled");
     }
-    (document.querySelector("#toolbarSearch") as HTMLInputElement).value = newConfig.k;
+    if (newConfig.k || clear) {
+        (document.querySelector("#toolbarSearch") as HTMLInputElement).value = newConfig.k;
+    }
     (element.querySelector("#toolbarReplace") as HTMLInputElement).value = newConfig.r;
     config = JSON.parse(JSON.stringify(newConfig));
     window.siyuan.storage[Constants.LOCAL_SEARCHDATA] = Object.assign({}, config);
@@ -263,8 +266,9 @@ export const updateSearchResult = (config: Config.IUILayoutTabSearchConfig, elem
         if (rmCurrentCriteria) {
             element.querySelector("#criteria .b3-chip--current")?.classList.remove("b3-chip--current");
         }
-        const loadingElement = element.querySelector(".fn__loading--top");
+        const loadingElement = element.querySelector(".fn__loading") as HTMLElement;
         loadingElement.classList.remove("fn__none");
+        loadingElement.style.top = element.querySelector(".b3-list--background").getBoundingClientRect().top + "px";
         const previousElement = element.querySelector('[data-type="previous"]');
         const nextElement = element.querySelector('[data-type="next"]');
         const inputElement = document.getElementById("toolbarSearch") as HTMLInputElement;
@@ -420,7 +424,7 @@ const initSearchEvent = (app: App, element: Element, config: Config.IUILayoutTab
                         types: getDefaultType(),
                         subTypes: getDefaultSubType(),
                         replaceTypes: Object.assign({}, Constants.SIYUAN_DEFAULT_REPLACETYPES),
-                    }, config);
+                    }, config, true);
                 }
                 if (target.parentElement.parentElement.childElementCount === 1) {
                     target.parentElement.parentElement.classList.add("fn__none");
@@ -567,7 +571,7 @@ const initSearchEvent = (app: App, element: Element, config: Config.IUILayoutTab
                         types: getDefaultType(),
                         subTypes: getDefaultSubType(),
                         replaceTypes: Object.assign({}, Constants.SIYUAN_DEFAULT_REPLACETYPES),
-                    }, config);
+                    }, config, true);
                     element.querySelector("#criteria .b3-chip--current")?.classList.remove("b3-chip--current");
                 });
                 window.siyuan.menus.menu.fullscreen();
@@ -699,6 +703,9 @@ const initSearchEvent = (app: App, element: Element, config: Config.IUILayoutTab
 
 export const popSearch = (app: App, searchConfig?: Config.IUILayoutTabSearchConfig) => {
     const config: Config.IUILayoutTabSearchConfig = JSON.parse(JSON.stringify(window.siyuan.storage[Constants.LOCAL_SEARCHDATA]));
+    if (config.method === 4 && !window.siyuan.config.ai.openAI.embeddingAPIKey) {
+        config.method = 0;
+    }
     const rangeText = (getCurrentEditor()?.protyle.toolbar.range || (getSelection().rangeCount > 0 ? getSelection().getRangeAt(0) : document.createRange())).toString();
     if (rangeText) {
         config.k = rangeText;
@@ -817,7 +824,7 @@ export const popSearch = (app: App, searchConfig?: Config.IUILayoutTabSearchConf
             <span class="fn__flex-1"></span>
          </div>
     </div>
-     <div class="fn__loading fn__loading--top"><img width="120px" src="/stage/loading-pure.svg"></div>
+     <div class="fn__loading"><img width="120px" src="/stage/loading-pure.svg"></div>
 </div>`,
         bindEvent(element) {
             document.querySelector("#toolbarSearchNew").addEventListener("click", () => {
@@ -889,7 +896,7 @@ const getUnRefListMobile = (element: Element, page = 1) => {
     fetchPost("/api/search/listInvalidBlockRefs", {
         page,
     }, (response) => {
-        element.parentElement.querySelector(".fn__loading--top").classList.add("fn__none");
+        element.parentElement.querySelector(".fn__loading").classList.add("fn__none");
         const nextElement = element.querySelector('[data-type="unRefNext"]');
         if (page < response.data.pageCount) {
             nextElement.removeAttribute("disabled");

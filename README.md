@@ -48,6 +48,7 @@
   - [Unraid Hosting](#unraid-hosting)
   - [TrueNAS Hosting](#TrueNAS-hosting)
   - [Insider Preview](#insider-preview)
+- [⌨️ Command-line Interface](#-command-line-interface)
 - [🏘️ Community](#️-community)
 - [🛠️ Development Guide](#️-development-guide)
 - [❓ FAQ](#-faq)
@@ -226,6 +227,8 @@ docker run -d \
 - `accessAuthCode`: Lock screen password (please **be sure to modify**, otherwise anyone can access your data)
   - Alternatively, it's possible to set the lock screen password via the `SIYUAN_ACCESS_AUTH_CODE` env variable. The commandline will always have the priority, if both are set
   - To disable the lock screen password set the env variable `SIYUAN_ACCESS_AUTH_CODE_BYPASS=true`
+- `SIYUAN_LANG`: Interface language (optional, defaults to `en_US` if unset in Docker). Omit it if you want the language chosen in **Settings** to persist across restarts; if set, it is applied on every startup and overrides the saved setting
+  - Alternatively, use the `--lang` command-line parameter. If both are set, the command-line takes priority
 
 To simplify things, it is recommended to configure the workspace folder path to be consistent on the host and container, such as having both `workspace_dir_host` and `workspace_dir_container` configured as `/siyuan/workspace`. The corresponding startup command would be:
 
@@ -255,8 +258,7 @@ services:
       - /siyuan/workspace:/siyuan/workspace
     restart: unless-stopped
     environment:
-      # A list of time zone identifiers can be found at https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-      - TZ=${YOUR_TIME_ZONE}
+      - TZ=${YOUR_TIME_ZONE}    # A list of time zone identifiers can be found at https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
       - PUID=${YOUR_USER_PUID}  # Customize user ID
       - PGID=${YOUR_USER_PGID}  # Customize group ID
 ```
@@ -348,7 +350,7 @@ services:
       - /mnt/Pool_1/Apps_Data/siyuan:/siyuan/workspace  # Adjust to your dataset path 
     restart: unless-stopped
     environment:
-      - TZ=America/Los_Angeles  # Replace with your timezone if needed
+      - TZ=America/New_York  # Replace with your timezone if needed
       - PUID=1001
       - PGID=1002
 ```
@@ -358,6 +360,54 @@ services:
 ### Insider Preview
 
 We release insider preview before major updates, please visit [https://github.com/siyuan-note/insider](https://github.com/siyuan-note/insider).
+
+## ⌨️ Command-line Interface
+
+The built-in CLI provides direct access to workspace data — no running server required.
+
+### Quick Start
+
+```bash
+# List all notebooks
+siyuan notebook list -w ~/SiYuan
+
+# Full-text search with JSON output
+siyuan search "keyword" -w ~/SiYuan -f json
+
+# Export a document as Markdown
+siyuan export md --id <block-id> -w ~/SiYuan
+```
+
+### Available Commands
+
+| Category | Commands |
+|----------|----------|
+| Notebooks & Documents | `notebook`, `document` — CRUD |
+| Content | `block`, `attr` — read/write, custom attributes |
+| Metadata | `tag`, `bookmark` |
+| Queries | `search`, `sql` — full-text and SQL queries |
+| References | `ref` — backlinks and mentions |
+| Import/Export | `export`, `import` — Markdown, HTML, PDF, Word, .sy.zip |
+| Data Management | `repo`, `history`, `sync` — snapshots, versions, cloud sync |
+| Utilities | `asset`, `file` — resources and file system |
+| Database | `database` — attribute view management |
+| Workspace | `workspace` — list and inspect |
+
+Run `siyuan --help` for the full command tree. Use `-f json` for script-friendly output.
+
+### Setup
+
+The CLI binary is `SiYuan-Kernel` under `<install>/resources/kernel`.
+Windows installer adds it to PATH automatically.
+On macOS/Linux, create a symlink manually:
+
+```bash
+# macOS
+ln -s /Applications/SiYuan.app/Contents/Resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+
+# Linux
+ln -s /path/to/SiYuan/resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+```
 
 ## 🏘️ Community
 

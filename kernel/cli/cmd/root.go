@@ -40,8 +40,16 @@ var rootCmd = &cobra.Command{
 	Use:     "SiYuan-Kernel",
 	Version: util.Ver,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// workspace 子命令不需要工作空间校验
+		if cmd.Parent() != nil && cmd.Parent().Name() == "workspace" {
+			return nil
+		}
+
 		// 确定工作目录
 		if exePath, err := os.Executable(); err == nil {
+			if resolved, err2 := filepath.EvalSymlinks(exePath); err2 == nil {
+				exePath = resolved
+			}
 			util.WorkingDir = filepath.Dir(exePath)
 		}
 
@@ -89,6 +97,9 @@ var rootCmd = &cobra.Command{
 
 func findAppDir() string {
 	if exePath, err := os.Executable(); err == nil {
+		if resolved, err2 := filepath.EvalSymlinks(exePath); err2 == nil {
+			exePath = resolved
+		}
 		exeDir := filepath.Dir(exePath)
 		candidates := []string{
 			filepath.Join(exeDir, ".."),              // resources/kernel/ → resources/ (production)
@@ -123,4 +134,13 @@ func init() {
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+func HasSubCommand(name string) bool {
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == name {
+			return true
+		}
+	}
+	return false
 }

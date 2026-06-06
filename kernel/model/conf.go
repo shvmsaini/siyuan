@@ -591,6 +591,14 @@ func InitConf() {
 			Conf.AI.OpenAI.APIMaxContexts)
 	}
 
+	if "" != Conf.AI.OpenAI.EmbeddingAPIKey {
+		logging.LogInfof("embedding API enabled\n"+
+			"    baseURL=%s\n"+
+			"    model=%s",
+			Conf.AI.OpenAI.EmbeddingBaseURL,
+			Conf.AI.OpenAI.EmbeddingModel)
+	}
+
 	Conf.ReadOnly = util.ReadOnly
 
 	if "" != util.AccessAuthCode {
@@ -799,7 +807,7 @@ func Close(force, setCurrentWorkspace bool, execInstallPkg int) (exitCode int) {
 		if err != nil {
 			logging.LogErrorf("read workspace paths failed: %s", err)
 		} else {
-			workspacePaths = gulu.Str.RemoveElem(workspacePaths, util.WorkspaceDir)
+			workspacePaths = util.RemoveWorkspacePath(workspacePaths, util.WorkspaceDir)
 			workspacePaths = append(workspacePaths, util.WorkspaceDir)
 			util.WriteWorkspacePaths(workspacePaths)
 		}
@@ -1202,9 +1210,10 @@ func clearWorkspaceTemp() {
 	os.RemoveAll(filepath.Join(util.DataDir, "%"))                 // v3.0.6 生成的错误历史文件夹
 	os.RemoveAll(filepath.Join(util.TempDir, "blocktree"))         // v3.1.0 前旧版的块树数据
 
-	// v3.7.0-dev 开发版数据索引队列，后面改成 index.queue 了
+	// v3.7.0-dev 开发版遗留文件清理
 	os.RemoveAll(filepath.Join(util.TempDir, "queue.wal"))
 	os.RemoveAll(filepath.Join(util.TempDir, "queue.wal.lock"))
+	os.RemoveAll(filepath.Join(util.DataDir, "storage", "ai", "agent", "todos"))
 
 	logging.LogInfof("cleared workspace temp")
 }

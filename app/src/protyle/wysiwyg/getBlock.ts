@@ -2,7 +2,8 @@ import {hasClosestBlock, isInEmbedBlock} from "../util/hasClosest";
 import {Constants} from "../../constants";
 
 export const getParentBlock = (element: Element) => {
-    if (element.parentElement.classList.contains("callout-content")) {
+    if (element.parentElement.classList.contains("callout-content") ||
+        element.parentElement.classList.contains("protyle-wysiwyg__embed")) {
         return element.parentElement.parentElement;
     }
     return element.parentElement;
@@ -83,7 +84,7 @@ export const getContenteditableElement = (element: Element): Element => {
         return element;
     }
     if (element.classList.contains("protyle-title__input")) {
-        return  element;
+        return element;
     }
     let blockElement = element;
     if (!blockElement.getAttribute("data-node-id")) {
@@ -252,6 +253,9 @@ export const isEndOfBlock = (range: Range) => {
         if (hasNextSibling(nextSibling)) {
             return false;
         } else {
+            if (nextSibling.nodeType === 1 && (nextSibling as Element).classList.contains("emoji")) {
+                return false;
+            }
             if (nextSibling.parentElement.getAttribute("spellcheck")) {
                 return true;
             }

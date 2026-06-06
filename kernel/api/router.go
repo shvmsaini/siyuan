@@ -38,9 +38,9 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/system/loginAuth", model.LoginAuth)
 	ginServer.Handle("POST", "/api/system/logoutAuth", model.LogoutAuth)
 	ginServer.Handle("GET", "/api/system/getCaptcha", model.GetCaptcha)
-	ginServer.Handle("GET", "/api/icon/getDynamicIcon", getDynamicIcon)
-
 	// 需要鉴权
+
+	ginServer.Handle("GET", "/api/icon/getDynamicIcon", model.CheckAuth, getDynamicIcon)
 
 	ginServer.Handle("POST", "/api/system/getEmojiConf", model.CheckAuth, getEmojiConf)
 	ginServer.Handle("POST", "/api/system/setAPIToken", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setAPIToken)
@@ -167,6 +167,7 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/history/reindexHistory", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, reindexHistory)
 	ginServer.Handle("POST", "/api/history/searchHistory", model.CheckAuth, model.CheckAdminRole, searchHistory)
 	ginServer.Handle("POST", "/api/history/getHistoryItems", model.CheckAuth, model.CheckAdminRole, getHistoryItems)
+	ginServer.Handle("POST", "/api/history/createDocHistory", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, createDocHistory)
 
 	ginServer.Handle("POST", "/api/outline/getDocOutline", model.CheckAuth, getDocOutline)
 
@@ -200,6 +201,7 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/search/fullTextSearchAssetContent", model.CheckAuth, fullTextSearchAssetContent)
 	ginServer.Handle("POST", "/api/search/getAssetContent", model.CheckAuth, getAssetContent)
 	ginServer.Handle("POST", "/api/search/listInvalidBlockRefs", model.CheckAuth, listInvalidBlockRefs)
+	ginServer.Handle("POST", "/api/search/semanticSearchBlock", model.CheckAuth, semanticSearchBlock)
 
 	ginServer.Handle("POST", "/api/block/getBlockInfo", model.CheckAuth, getBlockInfo)
 	ginServer.Handle("POST", "/api/block/getBlockDOM", model.CheckAuth, model.CheckAdminRole, getBlockDOM)
@@ -282,6 +284,7 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/attr/batchGetBlockAttrs", model.CheckAuth, batchGetBlockAttrs)
 
 	ginServer.Handle("POST", "/api/cloud/getCloudSpace", model.CheckAuth, model.CheckAdminRole, getCloudSpace)
+	ginServer.Handle("POST", "/api/cloud/setCloudReminder", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setCloudReminder)
 
 	ginServer.Handle("POST", "/api/sync/setSyncEnable", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setSyncEnable)
 	ginServer.Handle("POST", "/api/sync/setSyncInterval", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setSyncInterval)
@@ -521,24 +524,29 @@ func ServeAPI(ginServer *gin.Engine) {
 
 	ginServer.Handle("POST", "/api/ai/chatGPT", model.CheckAuth, model.CheckAdminRole, chatGPT)
 	ginServer.Handle("POST", "/api/ai/chatGPTWithAction", model.CheckAuth, model.CheckAdminRole, chatGPTWithAction)
+	ginServer.Handle("POST", "/api/ai/agent/chat", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, agentChat)
+	ginServer.Handle("POST", "/api/ai/agent/confirm", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, agentChatConfirm)
+	ginServer.Handle("POST", "/api/ai/agent/question", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, agentChatQuestion)
+	ginServer.Handle("POST", "/api/ai/agent/title", model.CheckAuth, model.CheckAdminRole, agentChatTitle)
 
 	ginServer.Handle("POST", "/api/petal/loadPetals", model.CheckAuth, loadPetals)
 	ginServer.Handle("POST", "/api/petal/setPetalEnabled", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setPetalEnabled)
 
-	ginServer.Handle("GET", "/api/plugin", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, listLoadedPlugins)
-	ginServer.Handle("GET", "/api/plugin/rpc", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, getLoadedPlugin)
-	ginServer.Handle("GET", "/api/plugin/rpc/:name", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, getLoadedPlugin)
+	ginServer.Handle("GET", "/api/plugin/rpc", model.CheckAuth, getLoadedPlugin)
+	ginServer.Handle("GET", "/api/plugin/rpc/:name", model.CheckAuth, getLoadedPlugin)
+	ginServer.Handle("GET", "/api/plugin", model.CheckAuth, listLoadedPlugins)
+
+	ginServer.Handle("POST", "/api/plugin/getLoadedPlugin", model.CheckAuth, getLoadedPlugin)
+	ginServer.Handle("POST", "/api/plugin/listLoadedPlugins", model.CheckAuth, listLoadedPlugins)
+
+	ginServer.Handle("POST", "/api/plugin/rpc", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcHttp)
+	ginServer.Handle("POST", "/api/plugin/rpc/:name", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcHttp)
 
 	ginServer.Handle("GET", "/ws/plugin/rpc", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcWebSocket)
 	ginServer.Handle("GET", "/ws/plugin/rpc/:name", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcWebSocket)
 
 	// ginServer.Any("/plugin/public/:name/*path", pluginPublicWebServer)
-	ginServer.Any("/plugin/private/:name/*path", model.CheckAuth, model.CheckAdminRole, pluginPrivateWebServer)
-
-	ginServer.Handle("POST", "/api/plugin/getLoadedPlugin", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, getLoadedPlugin)
-	ginServer.Handle("POST", "/api/plugin/listLoadedPlugins", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, listLoadedPlugins)
-	ginServer.Handle("POST", "/api/plugin/rpc", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcHttp)
-	ginServer.Handle("POST", "/api/plugin/rpc/:name", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginJsonRpcHttp)
+	ginServer.Any("/plugin/private/:name/*path", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, pluginPrivateWebServer)
 
 	ginServer.Any("/api/network/echo", model.CheckAuth, model.CheckAdminRole, echo)
 	ginServer.Any("/api/network/echo/*path", model.CheckAuth, model.CheckAdminRole, echo)

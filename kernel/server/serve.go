@@ -44,10 +44,12 @@ import (
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/api"
 	"github.com/siyuan-note/siyuan/kernel/cmd"
+	"github.com/siyuan-note/siyuan/kernel/mcp"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/server/proxy"
 	"github.com/siyuan-note/siyuan/kernel/util"
 	"github.com/soheilhy/cmux"
+
 	"golang.org/x/net/webdav"
 )
 
@@ -133,7 +135,6 @@ var (
 func Serve(fastMode bool, cookieKey string) {
 	gin.SetMode(gin.ReleaseMode)
 	ginServer := gin.New()
-	ginServer.UseH2C = true
 	ginServer.MaxMultipartMemory = 1024 * 1024 * 32 // 插入较大的资源文件时内存占用较大 https://github.com/siyuan-note/siyuan/issues/5023
 	ginServer.Use(
 		model.ControlConcurrency, // 请求串行化 Concurrency control when requesting the kernel API https://github.com/siyuan-note/siyuan/issues/9939
@@ -157,6 +158,7 @@ func Serve(fastMode bool, cookieKey string) {
 	serveAssets(ginServer)
 	serveAppearance(ginServer)
 	serveWebSocket(ginServer)
+	serveMCP(ginServer)
 	serveWebDAV(ginServer)
 	serveCalDAV(ginServer)
 	serveCardDAV(ginServer)
@@ -202,7 +204,18 @@ func Serve(fastMode bool, cookieKey string) {
 	model.Conf.ServerAddrs = util.GetServerAddrs()
 	model.Conf.Save()
 
-	util.ServerURL, err = url.Parse("http://127.0.0.1:" + port)
+	// Generate TLS certificates for local HTTPS + HTTP/2 support
+	certPath, keyPath, certErr := util.GetOrCreateTLSCert()
+	if certErr != nil {
+		logging.LogWarnf("failed to get TLS certificates, local HTTPS/HTTP2 unavailable: %s", certErr)
+		certPath = ""
+	}
+
+	if "" != certPath {
+		util.ServerURL, err = url.Parse("https://127.0.0.1:" + port)
+	} else {
+		util.ServerURL, err = url.Parse("http://127.0.0.1:" + port)
+	}
 	if err != nil {
 		logging.LogErrorf("parse server url failed: %s", err)
 	}
@@ -212,21 +225,11 @@ func Serve(fastMode bool, cookieKey string) {
 		rewritePortJSON(pid, port)
 	}
 
-	// Prepare TLS if enabled
-	var certPath, keyPath string
 	useTLS := model.Conf.System.NetworkServeTLS && model.Conf.System.NetworkServe
 	if useTLS {
-		// Ensure TLS certificates exist (proxy will use them directly)
-		var tlsErr error
-		certPath, keyPath, tlsErr = util.GetOrCreateTLSCert()
-		if tlsErr != nil {
-			logging.LogErrorf("failed to get TLS certificates: %s", tlsErr)
-			if !fastMode {
-				os.Exit(logging.ExitCodeUnavailablePort)
-			}
-			return
-		}
 		logging.LogInfof("kernel [pid=%s] http server [%s] is booting (TLS will be enabled on fixed port proxy)", pid, host+":"+port)
+	} else if "" != certPath {
+		logging.LogInfof("kernel [pid=%s] http server [%s] is booting (local HTTPS + HTTP/2 enabled)", pid, host+":"+port)
 	} else {
 		logging.LogInfof("kernel [pid=%s] http server [%s] is booting", pid, host+":"+port)
 	}
@@ -236,7 +239,7 @@ func Serve(fastMode bool, cookieKey string) {
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		go proxy.InitFixedPortService(host, useTLS, certPath, keyPath)
+		go proxy.InitFixedPortService(host, certPath, keyPath)
 		go proxy.InitPublishService()
 		// 反代服务器启动失败不影响核心服务器启动
 	}()
@@ -246,7 +249,7 @@ func Serve(fastMode bool, cookieKey string) {
 		Handler: httpHandler,
 	}
 
-	if useTLS && (util.FixedPort == util.ServerPort || util.IsPortOpen(util.FixedPort)) {
+	if "" != certPath {
 		if err = util.ServeMultiplexed(ln, httpHandler, certPath, keyPath, util.HttpServer); err != nil {
 			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, cmux.ErrListenerClosed) {
 				return
@@ -639,18 +642,8 @@ func serveAssets(ginServer *gin.Engine) {
 		relativePath := path.Join("assets", requestPath)
 		p, err := model.GetAssetAbsPath(relativePath)
 		if err != nil {
-			if strings.Contains(strings.TrimPrefix(requestPath, "/"), "/") {
-				// 再使用编码过的路径解析一次 https://github.com/siyuan-note/siyuan/issues/11823
-				dest := url.PathEscape(strings.TrimPrefix(requestPath, "/"))
-				dest = strings.ReplaceAll(dest, ":", "%3A")
-				relativePath = path.Join("assets", dest)
-				p, err = model.GetAssetAbsPath(relativePath)
-			}
-
-			if err != nil {
-				context.Status(http.StatusNotFound)
-				return
-			}
+			context.Status(http.StatusNotFound)
+			return
 		}
 
 		if !model.IsAdminRoleContext(context) {
@@ -659,6 +652,12 @@ func serveAssets(ginServer *gin.Engine) {
 				context.Status(http.StatusForbidden)
 				return
 			}
+		}
+
+		if util.IsSensitivePath(p) {
+			logging.LogErrorf("refuse to serve sensitive file [%s]", context.Request.URL.Path)
+			context.Status(http.StatusForbidden)
+			return
 		}
 
 		if serveThumbnail(context, p, requestPath) || serveSVG(context, p) {
@@ -1085,6 +1084,10 @@ func jwtMiddleware(c *gin.Context) {
 	}
 	c.Set(model.RoleContextKey, model.RoleVisitor)
 	c.Next()
+}
+
+func serveMCP(ginServer *gin.Engine) {
+	mcp.Serve(ginServer)
 }
 
 func serveFixedStaticFiles(ginServer *gin.Engine) {

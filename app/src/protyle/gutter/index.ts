@@ -2603,6 +2603,11 @@ export class Gutter {
                     }
 
                     let topElement = getTopAloneElement(nodeElement);
+                    // https://github.com/siyuan-note/siyuan/issues/17751 第二点
+                    if (topElement === nodeElement.parentElement && nodeElement.childElementCount > 3 &&
+                        nodeElement.classList.contains("li")) {
+                        topElement = nodeElement;
+                    }
                     // 提示下方仅有单个列表
                     if (topElement.classList.contains("callout") && !nodeElement.classList.contains("callout") &&
                         getParentBlock(nodeElement) !== topElement) {

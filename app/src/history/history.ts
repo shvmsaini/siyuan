@@ -16,6 +16,7 @@ import {closeModel} from "../mobile/util/closePanel";
 import {App} from "../index";
 import {resizeSide} from "./resizeSide";
 import {isSupportCSSHL, searchMarkRender} from "../protyle/render/searchMarkRender";
+import {pathPosix} from "../util/pathName";
 
 let historyEditor: Protyle;
 
@@ -275,6 +276,7 @@ const renderRepoSearchResult = (response: IWebSocketData, element: Element) => {
     let html = "";
     response.data.files.forEach((item: {
         fileID: string,
+        indexID: string,
         title: string,
         hPath: string,
         path: string,
@@ -282,7 +284,7 @@ const renderRepoSearchResult = (response: IWebSocketData, element: Element) => {
         updated: number
     }) => {
         /// #if MOBILE
-        html += `<li class="b3-list-item" data-type="searchFileItem" data-id="${item.fileID}" data-created="${item.updated}">
+        html += `<li class="b3-list-item" data-type="searchFileItem" data-id="${item.fileID}" data-snapshot="${item.indexID}" data-created="${item.updated}">
     <div class="fn__flex-1">
         <div style="padding-top:8px" class="b3-list-item__text">${escapeHtml(item.title)}</div>
         <div class="b3-list-item__meta">
@@ -292,7 +294,12 @@ const renderRepoSearchResult = (response: IWebSocketData, element: Element) => {
         </div>
         <div class="fn__flex" style="height: 26px">
             <span class="fn__flex-1"></span>
-            <span class="b3-list-item__action${item.path.endsWith(".sy")?" fn__none":""}" data-type="saveAs">
+            <span class="b3-list-item__action" data-type="view">
+                <svg><use xlink:href="#iconEye"></use></svg>
+                <span class="fn__space"></span>${window.siyuan.languages.cardPreview}
+            </span>
+            <span class="fn__space"></span>
+            <span class="b3-list-item__action" data-type="saveAs">
                 <svg><use xlink:href="#iconDownload"></use></svg>
                 <span class="fn__space"></span>${window.siyuan.languages.saveAs}
             </span>
@@ -305,7 +312,7 @@ const renderRepoSearchResult = (response: IWebSocketData, element: Element) => {
     </div>
 </li>`;
         /// #else
-        html += `<li class="b3-list-item b3-list-item--hide-action" data-type="searchFileItem" data-id="${item.fileID}" data-created="${item.updated}">
+        html += `<li class="b3-list-item b3-list-item--hide-action" data-type="searchFileItem" data-id="${item.fileID}" data-snapshot="${item.indexID}" data-created="${item.updated}">
     <div class="fn__flex-1">
         <span class="b3-list-item__text">${escapeHtml(item.title)}</span>
         <div class="b3-list-item__meta">
@@ -316,11 +323,14 @@ const renderRepoSearchResult = (response: IWebSocketData, element: Element) => {
             ${dayjs(item.updated).format("YYYY-MM-DD HH:mm:ss")}
         </div>
     </div>
+    <span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="view" aria-label="${window.siyuan.languages.cardPreview}">
+        <svg><use xlink:href="#iconEye"></use></svg>
+    </span>
+    <span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="saveAs" aria-label="${window.siyuan.languages.saveAs}">
+        <svg><use xlink:href="#iconDownload"></use></svg>
+    </span>
     <span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="rollback" aria-label="${window.siyuan.languages.rollback}">
         <svg><use xlink:href="#iconUndo"></use></svg>
-    </span>
-    <span class="b3-list-item__action b3-tooltips b3-tooltips__w${item.path.endsWith(".sy") ? " fn__none" : ""}" data-type="saveAs" aria-label="${window.siyuan.languages.saveAs}">
-        <svg><use xlink:href="#iconDownload"></use></svg>
     </span>
 </li>`;
         /// #endif
@@ -729,6 +739,50 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
                 const fileId = liElement.getAttribute("data-id");
                 fetchPost("/api/repo/exportRepoFile", {id: fileId}, (response) => {
                     saveExportFile(response.data.path);
+                });
+                event.stopPropagation();
+                event.preventDefault();
+                break;
+            } else if (type === "view") {
+                const liElement = target.closest(".b3-list-item");
+                const snapshotId = liElement.getAttribute("data-snapshot") || "";
+                const dialog = new Dialog({
+                    title: liElement.querySelector(".b3-list-item__text").textContent.trim(),
+                    content: '<div class="b3-dialog__content"><div style="border-radius: var(--b3-border-radius-b);"></div></div>',
+                    width: isMobile() ? "100vw" : "80vw",
+                    height: isMobile() ? "100vh" : "70vh",
+                    disableAnimation: true,
+                });
+                const contentElement = dialog.element.querySelector(".b3-dialog__content");
+                fetchPost("/api/repo/openRepoSnapshotFile", {id: liElement.getAttribute("data-id")}, (response) => {
+                    const type = pathPosix().extname(response.data.content).toLowerCase();
+                    if (Constants.SIYUAN_ASSETS_IMAGE.concat(Constants.SIYUAN_ASSETS_AUDIO).concat(Constants.SIYUAN_ASSETS_VIDEO).includes(type)) {
+                        contentElement.firstElementChild.innerHTML = renderAssetsPreview(response.data.content);
+                    } else if (response.data.displayInText) {
+                        contentElement.innerHTML = '<textarea readonly class="b3-text-field fn__block" style="height: 100%"></textarea>';
+                        (contentElement.firstElementChild as HTMLTextAreaElement).value = response.data.content || response.data.title;
+                    } else {
+                        const viewEditor = new Protyle(app, contentElement.firstElementChild as HTMLElement, {
+                            blockId: "",
+                            action: [Constants.CB_GET_HISTORY],
+                            history: {
+                                snapshot: snapshotId
+                            },
+                            render: {
+                                background: false,
+                                gutter: false,
+                                breadcrumb: false,
+                                breadcrumbDocName: false,
+                            },
+                            typewriterMode: false
+                        });
+                        disabledProtyle(viewEditor.protyle);
+                        onGet({
+                            data: response,
+                            protyle: viewEditor.protyle,
+                            action: [Constants.CB_GET_HISTORY, Constants.CB_GET_HTML],
+                        });
+                    }
                 });
                 event.stopPropagation();
                 event.preventDefault();

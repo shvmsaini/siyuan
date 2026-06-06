@@ -51,6 +51,7 @@
   - [小皮面板部署](#小皮面板部署)
   - [1Panel 面板部署](#1Panel-面板部署)
   - [内部预览版](#内部预览版)
+- [⌨️ 命令行接口](#-命令行接口)
 - [🏘️ 社区](#️-社区)
 - [🛠️ 开发指南](#️-开发指南)
 - [❓ 常见问题和解答](#-常见问题和解答)
@@ -219,6 +220,7 @@ docker run -d \
   -v workspace_dir_host:workspace_dir_container \
   -p 6806:6806 \
   -e PUID=1001 -e PGID=1002 \
+  -e SIYUAN_LANG=zh_CN \
   b3log/siyuan \
   --workspace=workspace_dir_container \
   --accessAuthCode=xxx
@@ -232,6 +234,8 @@ docker run -d \
 - `accessAuthCode`：锁屏密码，请**务必修改**，否则任何人都可以读写你的数据
   - 另外，也可以通过 `SIYUAN_ACCESS_AUTH_CODE` 环境变量设置锁屏密码。如果两者都设置了，命令行的值将优先
   - 可通过设置环境变量 `SIYUAN_ACCESS_AUTH_CODE_BYPASS=true` 禁用锁屏密码
+- `SIYUAN_LANG`：界面语言（可选，Docker 下未设置时默认为 `en_US`）。以下示例使用 `zh_CN`，与本文档语言一致。若希望**设置**中选择的语言在重启后仍生效，部署时请去掉该变量；若设置了，每次启动都会应用该值并覆盖已保存的语言设置
+  - 也可通过 `--lang` 命令行参数设置。如果两者都设置了，命令行的值将优先
 
 为了简化，建议将 workspace 文件夹路径在宿主机和容器上配置为一致的，比如将 `workspace_dir_host` 和 `workspace_dir_container` 都配置为 `/siyuan/workspace`，对应的启动命令示例：
 
@@ -240,6 +244,7 @@ docker run -d \
   -v /siyuan/workspace:/siyuan/workspace \
   -p 6806:6806 \
   -e PUID=1001 -e PGID=1002 \
+  -e SIYUAN_LANG=zh_CN \
   b3log/siyuan \
   --workspace=/siyuan/workspace/ \
   --accessAuthCode=xxx
@@ -261,10 +266,10 @@ services:
       - /siyuan/workspace:/siyuan/workspace
     restart: unless-stopped
     environment:
-      # A list of time zone identifiers can be found at https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-      - TZ=${YOUR_TIME_ZONE}
+      - TZ=${YOUR_TIME_ZONE}    # 时区标识符列表见 https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
       - PUID=${YOUR_USER_PUID}  # 自定义用户 ID
       - PGID=${YOUR_USER_PGID}  # 自定义组 ID
+      - SIYUAN_LANG=zh_CN       # 界面语言（与本文档一致）
 ```
 
 在此设置中：
@@ -319,6 +324,7 @@ Container Path: /home/siyuan
 Host path: /mnt/user/appdata/siyuan
 PUID: 1000
 PGID: 1000
+SIYUAN_LANG: zh_CN
 Publish parameters: --accessAuthCode=******（锁屏密码）
 ```
 
@@ -353,9 +359,10 @@ services:
       - /mnt/Pool_1/Apps_Data/siyuan:/siyuan/workspace  # Adjust to your dataset path 
     restart: unless-stopped
     environment:
-      - TZ=America/Los_Angeles  # Replace with your timezone if needed
+      - TZ=Asia/Shanghai  # 按需替换为你的时区
       - PUID=1001
       - PGID=1002
+      - SIYUAN_LANG=zh_CN
 ```
 
 </details>
@@ -454,6 +461,54 @@ services:
 ### 内部预览版
 
 我们会在有重大更新前发布内部预览版，请访问 [https://github.com/siyuan-note/insider](https://github.com/siyuan-note/insider)。
+
+## ⌨️ 命令行接口
+
+内置 CLI，直接访问工作空间数据，无需启动内核服务。
+
+### 快速开始
+
+```bash
+# 列出所有笔记本
+siyuan notebook list -w ~/SiYuan
+
+# 全文搜索（JSON 输出）
+siyuan search "关键词" -w ~/SiYuan -f json
+
+# 导出文档为 Markdown
+siyuan export md --id <block-id> -w ~/SiYuan
+```
+
+### 可用命令
+
+| 分类 | 命令 |
+|------|------|
+| 笔记本与文档 | `notebook`、`document` — 增删改查 |
+| 内容 | `block`、`attr` — 块读写、自定义属性 |
+| 元数据 | `tag`、`bookmark` |
+| 查询 | `search`、`sql` — 全文和 SQL 查询 |
+| 引用 | `ref` — 反向链接和提及 |
+| 导入导出 | `export`、`import` — Markdown、HTML、PDF、Word、.sy.zip |
+| 数据管理 | `repo`、`history`、`sync` — 快照、历史、云端同步 |
+| 工具 | `asset`、`file` — 资源与文件系统 |
+| 数据库 | `database` — 属性视图管理 |
+| 工作空间 | `workspace` — 列出和查看 |
+
+运行 `siyuan --help` 查看完整命令树。使用 `-f json` 获得适合脚本处理的输出。
+
+### 设置
+
+CLI 二进制为 `<安装目录>/resources/kernel/SiYuan-Kernel`。
+Windows 安装程序自动将内核目录添加到 PATH。
+macOS/Linux 下需要手动创建软链接：
+
+```bash
+# macOS
+ln -s /Applications/SiYuan.app/Contents/Resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+
+# Linux
+ln -s /安装路径/SiYuan/resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+```
 
 ## 🏘️ 社区
 

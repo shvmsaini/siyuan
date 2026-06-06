@@ -55,6 +55,9 @@ var serveCmd = &cobra.Command{
 
 		// 设置工作目录为可执行文件所在目录
 		if exePath, err := os.Executable(); err == nil {
+			if resolved, err2 := filepath.EvalSymlinks(exePath); err2 == nil {
+				exePath = resolved
+			}
 			util.WorkingDir = filepath.Dir(exePath)
 		}
 
@@ -84,6 +87,7 @@ var serveCmd = &cobra.Command{
 		go cache.LoadAssets()
 		go util.CheckFileSysStatus()
 		go plugin.InitManager()
+		go model.StartEmbeddingIndexer()
 
 		model.WatchAssets()
 		model.WatchEmojis()

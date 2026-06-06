@@ -702,7 +702,7 @@ export class Toolbar {
                 }
                 if (currentNode && currentNode.nodeType !== 3) {
                     const currentType = (currentNode.getAttribute("data-type") || "").split(" ");
-                    if (currentNode.tagName !== "BR" &&
+                    if (currentNode.tagName !== "BR" && !currentNode.classList.contains("img") &&
                         previousElement && previousElement.nodeType !== 3 &&
                         currentNode.nodeType !== 3 &&
                         isArrayEqual(currentType, (previousElement.getAttribute("data-type") || "").split(" ")) &&
@@ -862,6 +862,8 @@ export class Toolbar {
         if (!nodeElement) {
             return;
         }
+        // https://github.com/siyuan-note/siyuan/issues/17814
+        nodeElement.setAttribute(Constants.ATTRIBUTE_EDITING, "true");
         hideElements(["hint", "select"], protyle);
         window.siyuan.menus.menu.remove();
         const id = nodeElement.getAttribute("data-node-id");

@@ -25,7 +25,7 @@ import {Constants} from "../../constants";
 import {scrollCenter} from "../../util/highlightById";
 import {isMobile} from "../../util/functions";
 import {mathRender} from "../render/mathRender";
-import {hasClosestBlock, hasClosestByClassName} from "../util/hasClosest";
+import {hasClosestBlock, hasClosestByClassName, isInEmbedBlock} from "../util/hasClosest";
 import {getInstanceById} from "../../layout/util";
 import {Tab} from "../../layout/Tab";
 import {Backlink} from "../../layout/dock/Backlink";
@@ -70,6 +70,9 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
             const item = selectElements[i];
             const topElement = getTopAloneElement(item);
             topParentElement = topElement.parentElement;
+            if (isInEmbedBlock(item)) {
+                continue;
+            }
             const id = topElement.getAttribute("data-node-id");
             deletes.push({
                 action: "delete",
@@ -273,6 +276,9 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
                 });
             }
         }, Constants.TIMEOUT_COUNT);// 需等待滚动阻塞、后台处理完成。否则会加载已删除的内容
+        return;
+    }
+    if (isInEmbedBlock(blockElement)) {
         return;
     }
     const blockType = blockElement.getAttribute("data-type");

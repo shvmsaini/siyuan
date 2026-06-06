@@ -64,7 +64,7 @@ export const setTabPosition = (onlyPadding = false) => {
             // header padding
             if (isWindowMode) {
                 if (headerRect.left === 0) {
-                    headerElement.style.paddingLeft = getComputedStyle(document.body).getPropertyValue("--b3-toolbar-left-mac");
+                    headerElement.style.paddingLeft = (parseInt(getComputedStyle(document.body).getPropertyValue("--b3-toolbar-left-mac")) - 5) + "px";
                 }
             } else {
                 if (headerRect.left > toolbarDragRect.left && headerRect.left === centerRect.left) {
@@ -254,14 +254,7 @@ export const getDockByType = (type: TDock | string) => {
 export const newCenterEmptyTab = (app: App) => {
     return new Tab({
         panel: `<div class="layout__empty">
-        <div class="${!window.siyuan.config.readonly ? " fn__none" : ""}">
-            <div class="config-about__logo">
-                <img src="/stage/icon.png">
-                ${window.siyuan.languages.siyuanNote}
-            </div>
-            <div class="b3-label__text">${window.siyuan.languages.slogan}</div>
-        </div>
-        <div class="fn__hr"></div>
+    <img class="${!window.siyuan.config.readonly ? "fn__none" : ""}" src="/stage/icon.png" style="width: 256px;margin-top: -48px;">
     <div class="b3-list" style="margin: 0 auto">
         <div class="b3-list-item" id="editorEmptySearch">
             <svg class="b3-list-item__graphic"><use xlink:href="#iconSearch"></use></svg>

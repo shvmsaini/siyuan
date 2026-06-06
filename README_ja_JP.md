@@ -48,6 +48,7 @@
   - [Unraid ホスティング](#unraid-ホスティング)
   - [TrueNAS ホスティング](#truenas-ホスティング)
   - [インサイダープレビュー](#インサイダープレビュー)
+- [⌨️ コマンドラインインターフェース](#-コマンドラインインターフェース)
 - [🏘️ コミュニティ](#️-コミュニティ)
 - [🛠️ 開発ガイド](#️-開発ガイド)
 - [❓ FAQ](#-faq)
@@ -212,6 +213,7 @@ docker run -d \
   -v workspace_dir_host:workspace_dir_container \
   -p 6806:6806 \
   -e PUID=1001 -e PGID=1002 \
+  -e SIYUAN_LANG=ja_JP \
   b3log/siyuan \
   --workspace=workspace_dir_container \
   --accessAuthCode=xxx
@@ -225,6 +227,8 @@ docker run -d \
 - `accessAuthCode`: ロック画面パスワード（**必ず変更してください**、そうしないと誰でもデータにアクセスできます）
   - また、`SIYUAN_ACCESS_AUTH_CODE` 環境変数を設定することでロック画面パスワードを指定することもできます。両方が設定されている場合、コマンドラインの値が優先されます
   - 環境変数 `SIYUAN_ACCESS_AUTH_CODE_BYPASS=true` を設定することで、ロック画面パスワードを無効にすることができます
+- `SIYUAN_LANG`：インターフェース言語（オプション、Docker で未設定の場合はデフォルトで `en_US`）。以下の例では、このドキュメントの言語に合わせて `ja_JP` を使用します。**設定**で選択した言語を再起動後も維持したい場合は、デプロイ時にこの変数を省略してください。設定した場合は、起動のたびにその値が適用され、保存済みの言語設定を上書きします
+  - `--lang` コマンドライン引数でも設定できます。両方が設定されている場合は、コマンドラインの値が優先されます
 
 簡略化するために、ホストとコンテナでワークスペースフォルダーのパスを一致させることをお勧めします。たとえば、`workspace_dir_host` と `workspace_dir_container` の両方を `/siyuan/workspace` に設定します。対応する起動コマンドは次のようになります：
 
@@ -233,6 +237,7 @@ docker run -d \
   -v /siyuan/workspace:/siyuan/workspace \
   -p 6806:6806 \
   -e PUID=1001 -e PGID=1002 \
+  -e SIYUAN_LANG=ja_JP \
   b3log/siyuan \
   --workspace=/siyuan/workspace/ \
   --accessAuthCode=xxx
@@ -254,10 +259,10 @@ services:
       - /siyuan/workspace:/siyuan/workspace
     restart: unless-stopped
     environment:
-      # タイムゾーン識別子のリストは https://en.wikipedia.org/wiki/List_of_tz_database_time_zones を参照してください
-      - TZ=${YOUR_TIME_ZONE}
+      - TZ=${YOUR_TIME_ZONE}    # タイムゾーン識別子のリストは https://en.wikipedia.org/wiki/List_of_tz_database_time_zones を参照してください
       - PUID=${YOUR_USER_PUID}  # カスタムユーザーID
       - PGID=${YOUR_USER_PGID}  # カスタムグループID
+      - SIYUAN_LANG=ja_JP       # インターフェース言語（このドキュメントに合わせる）
 ```
 
 この設定では：
@@ -313,6 +318,7 @@ Container Path: /home/siyuan
 Host path: /mnt/user/appdata/siyuan
 PUID: 1000
 PGID: 1000
+SIYUAN_LANG: ja_JP
 Publish parameters: --accessAuthCode=******（ロック画面パスワード）
 ```
 
@@ -347,9 +353,10 @@ services:
       - /mnt/Pool_1/Apps_Data/siyuan:/siyuan/workspace  # Adjust to your dataset path 
     restart: unless-stopped
     environment:
-      - TZ=America/Los_Angeles  # Replace with your timezone if needed
+      - TZ=Asia/Tokyo  # 必要に応じてタイムゾーンに置き換えてください
       - PUID=1001
       - PGID=1002
+      - SIYUAN_LANG=ja_JP  # インターフェース言語（このドキュメントに合わせる）
 ```
 
 </details>
@@ -357,6 +364,49 @@ services:
 ### インサイダープレビュー
 
 主要な更新前にインサイダープレビューをリリースします。詳細は[https://github.com/siyuan-note/insider](https://github.com/siyuan-note/insider)をご覧ください。
+
+## ⌨️ コマンドラインインターフェース
+
+組み込み CLI で、サーバー起動なしにワークスペースデータへ直接アクセスできます。
+
+### クイックスタート
+
+```bash
+siyuan notebook list -w ~/SiYuan
+siyuan search "keyword" -w ~/SiYuan -f json
+siyuan export md --id <block-id> -w ~/SiYuan
+```
+
+### 利用可能なコマンド
+
+| カテゴリ | コマンド |
+|----------|----------|
+| ノートと文書 | `notebook`, `document` — CRUD |
+| コンテンツ | `block`, `attr` — 読み書き、カスタム属性 |
+| メタデータ | `tag`, `bookmark` |
+| クエリ | `search`, `sql` — 全文検索と SQL |
+| 参照 | `ref` — バックリンクと言及 |
+| インポート/エクスポート | `export`, `import` — Markdown, HTML, PDF, Word, .sy.zip |
+| データ管理 | `repo`, `history`, `sync` — スナップショット、履歴、クラウド同期 |
+| ユーティリティ | `asset`, `file` — リソースとファイルシステム |
+| データベース | `database` — 属性ビュー管理 |
+| ワークスペース | `workspace` — 一覧と確認 |
+
+詳細は `siyuan --help` を実行してください。スクリプト向け出力には `-f json` を使用します。
+
+### セットアップ
+
+CLI バイナリは `<インストール先>/resources/kernel/SiYuan-Kernel` です。
+Windows インストーラーが自動で PATH に追加します。
+macOS/Linux では手動でシンボリックリンクを作成してください。
+
+```bash
+# macOS
+ln -s /Applications/SiYuan.app/Contents/Resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+
+# Linux
+ln -s /インストール先/SiYuan/resources/kernel/SiYuan-Kernel /usr/local/bin/siyuan
+```
 
 ## 🏘️ コミュニティ
 

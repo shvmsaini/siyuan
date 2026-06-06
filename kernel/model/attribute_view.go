@@ -18,6 +18,7 @@ package model
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -3274,31 +3275,36 @@ func getAvNames(avIDs string) (ret string) {
 
 func (tx *Transaction) getAttrViewBoundNodes(attrView *av.AttributeView) (trees map[string]*parse.Tree, nodes []*ast.Node) {
 	blockKeyValues := attrView.GetBlockKeyValues()
-	if nil == blockKeyValues.Values {
+	if nil == blockKeyValues || nil == blockKeyValues.Values {
 		return
 	}
 
 	trees = map[string]*parse.Tree{}
 	for _, blockKeyValue := range blockKeyValues.Values {
-		if blockKeyValue.IsDetached {
+		if blockKeyValue.IsDetached || nil == blockKeyValue.Block {
+			continue
+		}
+
+		blockID := blockKeyValue.Block.ID
+		if "" == blockID {
 			continue
 		}
 
 		var tree *parse.Tree
-		tree = trees[blockKeyValue.Block.ID]
+		tree = trees[blockID]
 		if nil == tree {
 			if nil == tx {
-				tree, _ = LoadTreeByBlockID(blockKeyValue.Block.ID)
+				tree, _ = LoadTreeByBlockID(blockID)
 			} else {
-				tree, _ = tx.loadTree(blockKeyValue.Block.ID)
+				tree, _ = tx.loadTree(blockID)
 			}
 		}
 		if nil == tree {
 			continue
 		}
-		trees[blockKeyValue.Block.ID] = tree
+		trees[blockID] = tree
 
-		node := treenode.GetNodeInTree(tree, blockKeyValue.Block.ID)
+		node := treenode.GetNodeInTree(tree, blockID)
 		if nil == node {
 			continue
 		}
@@ -4651,6 +4657,16 @@ func updateAttributeViewColumn(operation *Operation) (err error) {
 		av.KeyTypeRelation, av.KeyTypeRollup, av.KeyTypeLineNumber:
 		for _, keyValues := range attrView.KeyValues {
 			if keyValues.Key.ID == operation.ID {
+				isPrimaryKey := av.KeyTypeBlock == keyValues.Key.Type
+				if isPrimaryKey != (av.KeyTypeBlock == colType) {
+					if isPrimaryKey {
+						err = errors.New("cannot change type of primary key field")
+					} else {
+						err = errors.New("cannot change field type to primary key")
+					}
+					return
+				}
+
 				keyValues.Key.Name = strings.TrimSpace(operation.Name)
 
 				changeType = keyValues.Key.Type != colType
@@ -4716,6 +4732,16 @@ func (tx *Transaction) doRemoveAttrViewColumn(operation *Operation) (ret *TxErr)
 func RemoveAttributeViewKey(avID, keyID string, removeRelationDest bool) (err error) {
 	attrView, err := av.ParseAttributeView(avID)
 	if err != nil {
+		return
+	}
+
+	key, keyErr := attrView.GetKey(keyID)
+	if nil != keyErr {
+		err = keyErr
+		return
+	}
+	if av.KeyTypeBlock == key.Type {
+		err = errors.New("cannot remove primary key field")
 		return
 	}
 
@@ -5778,11 +5804,21 @@ func updateBoundBlockAvsAttribute(avIDs []string) {
 		}
 
 		blockKeyValues := attrView.GetBlockKeyValues()
+		if nil == blockKeyValues || nil == blockKeyValues.Values {
+			continue
+		}
+
 		for _, blockValue := range blockKeyValues.Values {
-			if blockValue.IsDetached {
+			if blockValue.IsDetached || nil == blockValue.Block {
 				continue
 			}
-			bt := treenode.GetBlockTree(blockValue.BlockID)
+
+			boundBlockID := blockValue.Block.ID
+			if "" == boundBlockID {
+				continue
+			}
+
+			bt := treenode.GetBlockTree(boundBlockID)
 			if nil == bt {
 				continue
 			}
@@ -5796,7 +5832,7 @@ func updateBoundBlockAvsAttribute(avIDs []string) {
 				cachedTrees[bt.RootID] = tree
 			}
 
-			node := treenode.GetNodeInTree(tree, blockValue.BlockID)
+			node := treenode.GetNodeInTree(tree, boundBlockID)
 			if nil == node {
 				continue
 			}

@@ -28,6 +28,7 @@ import {mathRender} from "../../protyle/render/mathRender";
 import {genEmptyElement} from "../../block/util";
 import {focusBlock, focusByWbr} from "../../protyle/util/selection";
 import {dragOverScroll, stopScrollAnimation} from "../../boot/globalEvent/dragover";
+import {getDocDisplayName} from "../../util/pathName";
 
 export class Outline extends Model {
     public tree: Tree;
@@ -36,6 +37,7 @@ export class Outline extends Model {
     public type: "pin" | "local";
     public blockId: string;
     public isPreview: boolean;
+    public protyle: IProtyle;
     private preFilterExpandIds: string[] | null = null;
 
     constructor(options: {
@@ -45,53 +47,12 @@ export class Outline extends Model {
         type: "pin" | "local",
         isPreview: boolean
     }) {
-        super({
-            app: options.app,
+        super({app: options.app});
+        this.connect({
             id: options.tab.id,
             type: "outline",
-            callback() {
-                if (this.type === "local") {
-                    fetchPost("/api/block/checkBlockExist", {id: this.blockId}, existResponse => {
-                        if (!existResponse.data) {
-                            this.parent.parent.removeTab(this.parent.id);
-                        }
-                    });
-                }
-            },
-            msgCallback(data) {
-                if (data) {
-                    switch (data.cmd) {
-                        case "savedoc":
-                            this.onTransaction(data);
-                            break;
-                        case "rename":
-                            if (this.type === "local" && this.blockId === data.data.id) {
-                                this.parent.updateTitle(data.data.title);
-                            } else {
-                                this.updateDocTitle({
-                                    title: data.data.title,
-                                    icon: Constants.ZWSP
-                                }, -1);
-                            }
-                            break;
-                        case "closeBox":
-                        case "removeBox":
-                            if (this.type === "local") {
-                                fetchPost("/api/block/checkBlockExist", {id: this.blockId}, existResponse => {
-                                    if (!existResponse.data) {
-                                        this.parent.parent.removeTab(this.parent.id);
-                                    }
-                                });
-                            }
-                            break;
-                        case "removeDoc":
-                            if (data.data.ids.includes(this.blockId) && this.type === "local") {
-                                this.parent.parent.removeTab(this.parent.id);
-                            }
-                            break;
-                    }
-                }
-            }
+            callback: this.handleCallback.bind(this),
+            msgCallback: this.handleMsgCallback.bind(this)
         });
         this.isPreview = options.isPreview;
         this.blockId = options.blockId;
@@ -338,6 +299,52 @@ export class Outline extends Model {
         });
     }
 
+    private handleCallback() {
+        if (this.type === "local") {
+            fetchPost("/api/block/checkBlockExist", {id: this.blockId}, existResponse => {
+                if (!existResponse.data) {
+                    this.parent.parent.removeTab(this.parent.id);
+                }
+            });
+        }
+    }
+
+    private handleMsgCallback(data: IWebSocketData) {
+        if (data) {
+            switch (data.cmd) {
+                case "savedoc":
+                    this.onTransaction(data);
+                    break;
+                case "rename":
+                    if (this.type === "local" && this.blockId === data.data.id) {
+                        this.parent.updateTitle(getDocDisplayName(data.data.title, data.data.empty));
+                        this.protyle.model.parent.updateTitle(getDocDisplayName(data.data.title, data.data.empty));
+                    } else {
+                        this.updateDocTitle({
+                            title: data.data.title,
+                            icon: Constants.ZWSP
+                        }, -1);
+                    }
+                    break;
+                case "closeBox":
+                case "removeBox":
+                    if (this.type === "local") {
+                        fetchPost("/api/block/checkBlockExist", {id: this.blockId}, existResponse => {
+                            if (!existResponse.data) {
+                                this.parent.parent.removeTab(this.parent.id);
+                            }
+                        });
+                    }
+                    break;
+                case "removeDoc":
+                    if (data.data.ids.includes(this.blockId) && this.type === "local") {
+                        this.parent.parent.removeTab(this.parent.id);
+                    }
+                    break;
+            }
+        }
+    }
+
     private bindSort() {
         this.element.addEventListener("mousedown", (event: MouseEvent) => {
             const item = hasClosestByClassName(event.target as HTMLElement, "b3-list-item");
@@ -491,8 +498,9 @@ export class Outline extends Model {
                 if (ial.icon === Constants.ZWSP && docTitleElement.firstElementChild) {
                     iconHTML = docTitleElement.firstElementChild.outerHTML;
                 }
-                docTitleElement.innerHTML = `${iconHTML}<span class="b3-list-item__text">${escapeHtml(ial.title)}</span>${docTitleElement.querySelector(".counter")?.outerHTML || ""}`;
-                docTitleElement.setAttribute("title", ial.title);
+                const title = getDocDisplayName(ial.title, ial[Constants.CUSTOM_SY_TITLE_EMPTY] === "true");
+                docTitleElement.innerHTML = `${iconHTML}<span class="b3-list-item__text">${escapeHtml(title)}</span>${docTitleElement.querySelector(".counter")?.outerHTML || ""}`;
+                docTitleElement.setAttribute("title", title);
                 docTitleElement.classList.remove("fn__none");
             }
             // count 为 -1 时，不对数量进行更新

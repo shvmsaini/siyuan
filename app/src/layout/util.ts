@@ -232,7 +232,8 @@ const initInternalDock = (dockItem: Config.IUILayoutDockTab[]) => {
         }
         if (existSubItem.hotkeyLangId) {
             existSubItem.title = window.siyuan.languages[existSubItem.hotkeyLangId];
-            existSubItem.hotkey = window.siyuan.config.keymap.general[existSubItem.hotkeyLangId].custom;
+            const km = window.siyuan.config.keymap.general[existSubItem.hotkeyLangId];
+            existSubItem.hotkey = km ? km.custom : "";
         }
     });
 };
@@ -473,6 +474,19 @@ export const JSONToLayout = (app: App, isStart: boolean) => {
         afterLoadPlugin(item);
     });
     saveLayout();
+    // https://github.com/siyuan-note/siyuan/issues/17779
+    if (window.siyuan.layout.rightDock.layout.children[0].element.classList.contains("fn__none") &&
+        window.siyuan.layout.rightDock.layout.children[1].element.classList.contains("fn__none")) {
+        window.siyuan.layout.rightDock.layout.element.style.width = "0px";
+    }
+    if (window.siyuan.layout.leftDock.layout.children[0].element.classList.contains("fn__none") &&
+        window.siyuan.layout.leftDock.layout.children[1].element.classList.contains("fn__none")) {
+        window.siyuan.layout.rightDock.layout.element.style.width = "0px";
+    }
+    if (window.siyuan.layout.bottomDock.layout.children[0].element.classList.contains("fn__none") &&
+        window.siyuan.layout.bottomDock.layout.children[1].element.classList.contains("fn__none")) {
+        window.siyuan.layout.bottomDock.layout.element.style.height = "0px";
+    }
     // 等待 dock 面板动画结束
     setTimeout(() => {
         setTabPosition();
