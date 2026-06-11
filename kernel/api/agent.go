@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ type agentChatReq struct {
 	Messages   []agent.UserMessage `json:"messages"`
 	Language   string              `json:"language"`
 	References []agent.Reference   `json:"references"`
+	Model      string              `json:"model,omitempty"`
 }
 
 type runningSession struct {
@@ -46,7 +48,7 @@ var sessionsMu sync.Mutex
 var runningSessions = map[string]*runningSession{}
 
 func agentChat(c *gin.Context) {
-	if "" == model.Conf.AI.OpenAI.APIKey {
+	if !model.Conf.AI.HasAnyProvider() {
 		ret := gulu.Ret.NewResult()
 		ret.Code = -1
 		ret.Msg = model.Conf.Language(193)
@@ -63,27 +65,28 @@ func agentChat(c *gin.Context) {
 		return
 	}
 
+	selectedProvider := model.Conf.AI.GetProvider(req.Model)
 	client := util.NewOpenAIClient(
-		model.Conf.AI.OpenAI.APIKey,
-		model.Conf.AI.OpenAI.APIProxy,
-		model.Conf.AI.OpenAI.APIBaseURL,
-		model.Conf.AI.OpenAI.APIUserAgent,
-		model.Conf.AI.OpenAI.APIVersion,
-		model.Conf.AI.OpenAI.APIProvider,
+		selectedProvider.APIKey,
+		selectedProvider.APIProxy,
+		selectedProvider.APIBaseURL,
+		selectedProvider.APIUserAgent,
+		selectedProvider.APIVersion,
+		selectedProvider.APIProvider,
 	)
 
-	confirmTimeout := time.Duration(model.Conf.AI.OpenAI.AgentConfirmTimeout) * time.Second
+	confirmTimeout := time.Duration(selectedProvider.AgentConfirmTimeout) * time.Second
 	if confirmTimeout <= 0 {
 		confirmTimeout = 120 * time.Second
 	}
-	maxRetries := model.Conf.AI.OpenAI.AgentMaxRetries
+	maxRetries := selectedProvider.AgentMaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 3
 	}
 
 	var eventCh <-chan agent.AgentEvent
 
-	eventCh = agent.AgentChat(context.Background(), client, model.Conf.AI.OpenAI.APIModel, req.SessionID, req.Messages, req.Language, req.References, confirmTimeout, maxRetries)
+	eventCh = agent.AgentChat(context.Background(), client, selectedProvider.APIModel, req.SessionID, req.Messages, req.Language, req.References, confirmTimeout, maxRetries)
 	sessionsMu.Lock()
 	runningSessions[req.SessionID] = &runningSession{eventCh: eventCh}
 	sessionsMu.Unlock()
@@ -97,11 +100,11 @@ func agentChat(c *gin.Context) {
 		return
 	}
 
-	timeout := model.Conf.AI.OpenAI.APITimeout
+	timeout := selectedProvider.APITimeout
 	if timeout <= 0 {
 		timeout = 30
 	}
-	totalTimeout := time.Duration(model.Conf.AI.OpenAI.AgentTimeout) * time.Second
+	totalTimeout := time.Duration(selectedProvider.AgentTimeout) * time.Second
 	if totalTimeout <= 0 {
 		totalTimeout = time.Duration(timeout) * time.Second * 10
 	}
@@ -172,6 +175,7 @@ func agentChatQuestion(c *gin.Context) {
 
 type agentTitleReq struct {
 	Message string `json:"message"`
+	Model   string `json:"model"`
 }
 
 func agentChatTitle(c *gin.Context) {
@@ -184,18 +188,103 @@ func agentChatTitle(c *gin.Context) {
 		return
 	}
 
+	selectedProvider := model.Conf.AI.GetProvider(req.Model)
 	client := util.NewOpenAIClient(
-		model.Conf.AI.OpenAI.APIKey,
-		model.Conf.AI.OpenAI.APIProxy,
-		model.Conf.AI.OpenAI.APIBaseURL,
-		model.Conf.AI.OpenAI.APIUserAgent,
-		model.Conf.AI.OpenAI.APIVersion,
-		model.Conf.AI.OpenAI.APIProvider,
+		selectedProvider.APIKey,
+		selectedProvider.APIProxy,
+		selectedProvider.APIBaseURL,
+		selectedProvider.APIUserAgent,
+		selectedProvider.APIVersion,
+		selectedProvider.APIProvider,
 	)
 
-	title := agent.GenerateTitle(client, model.Conf.AI.OpenAI.APIModel, req.Message)
+	title := agent.GenerateTitle(client, selectedProvider.APIModel, req.Message)
 	ret := gulu.Ret.NewResult()
 	ret.Data = title
+	c.JSON(http.StatusOK, ret)
+}
+
+type agentSessionsReq struct {
+	Page     int    `json:"page"`
+	PageSize int    `json:"pageSize"`
+	Keyword  string `json:"keyword"`
+}
+
+func lsSessions(c *gin.Context) {
+	req := &agentSessionsReq{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		ret := gulu.Ret.NewResult()
+		ret.Code = -1
+		ret.Msg = "invalid request: " + err.Error()
+		c.JSON(http.StatusOK, ret)
+		return
+	}
+
+	result := agent.ListSessions(req.Page, req.PageSize, req.Keyword)
+	ret := gulu.Ret.NewResult()
+	ret.Data = result
+	c.JSON(http.StatusOK, ret)
+}
+
+type agentSessionGetReq struct {
+	ID string `json:"id"`
+}
+
+func getSession(c *gin.Context) {
+	req := &agentSessionGetReq{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		ret := gulu.Ret.NewResult()
+		ret.Code = -1
+		ret.Msg = "invalid request: " + err.Error()
+		c.JSON(http.StatusOK, ret)
+		return
+	}
+
+	session, err := agent.GetSession(req.ID)
+	if err != nil {
+		ret := gulu.Ret.NewResult()
+		ret.Code = -1
+		ret.Msg = err.Error()
+		c.JSON(http.StatusOK, ret)
+		return
+	}
+
+	ret := gulu.Ret.NewResult()
+	ret.Data = session
+	c.JSON(http.StatusOK, ret)
+}
+
+type agentSessionDeleteReq struct {
+	ID string `json:"id"`
+}
+
+func removeSession(c *gin.Context) {
+	req := &agentSessionDeleteReq{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		ret := gulu.Ret.NewResult()
+		ret.Code = -1
+		ret.Msg = "invalid request: " + err.Error()
+		c.JSON(http.StatusOK, ret)
+		return
+	}
+
+	_ = agent.DeleteSession(req.ID)
+	ret := gulu.Ret.NewResult()
+	c.JSON(http.StatusOK, ret)
+}
+
+func saveSession(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		ret := gulu.Ret.NewResult()
+		ret.Code = -1
+		ret.Msg = "failed to read body: " + err.Error()
+		c.JSON(http.StatusOK, ret)
+		return
+	}
+
+	_ = agent.SaveSession(body)
+	ret := gulu.Ret.NewResult()
 	c.JSON(http.StatusOK, ret)
 }
 
@@ -242,6 +331,8 @@ func writeSSE(c *gin.Context, event agent.AgentEvent) error {
 			"questionID": event.QuestionID,
 			"arguments":  event.Arguments,
 		})
+	case "snapshot":
+		return writeSSEEvent(c, "snapshot", map[string]string{"snapshotID": event.SnapshotID})
 	}
 	return nil
 }
@@ -257,4 +348,11 @@ func writeSSEEvent(c *gin.Context, eventType string, data interface{}) error {
 
 func writeSSEError(c *gin.Context, message string) error {
 	return writeSSEEvent(c, "error", map[string]string{"message": message})
+}
+
+func lsSkills(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+	skills := util.DiscoverSkills()
+	ret.Data = skills
 }

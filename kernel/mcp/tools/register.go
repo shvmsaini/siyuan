@@ -16,15 +16,45 @@
 
 package tools
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 var registryMu sync.RWMutex
 var Registry = map[string]*Tool{}
 
 func GetTool(name string) *Tool {
+	return LookupTool(name)
+}
+
+func LookupTool(name string) *Tool {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	return Registry[name]
+
+	name = strings.TrimSpace(name)
+
+	if t := Registry[name]; t != nil {
+		return t
+	}
+
+	lower := strings.ToLower(name)
+	for k, v := range Registry {
+		if strings.ToLower(k) == lower {
+			return v
+		}
+	}
+
+	if prefix := "siyuan_"; strings.HasPrefix(lower, prefix) {
+		base := strings.TrimPrefix(lower, prefix)
+		for k, v := range Registry {
+			if strings.ToLower(k) == base {
+				return v
+			}
+		}
+	}
+
+	return nil
 }
 
 func GetAllTools() []*Tool {
@@ -41,6 +71,12 @@ func SetTool(name string, t *Tool) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	Registry[name] = t
+}
+
+func RemoveTool(name string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(Registry, name)
 }
 
 func register(t *Tool) {

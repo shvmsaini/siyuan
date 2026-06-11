@@ -388,7 +388,9 @@ export class Dock {
             return;
         }
         // https://github.com/siyuan-note/siyuan/issues/7504
-        if (document.activeElement && this.layout.element.contains(document.activeElement) && document.activeElement.classList.contains("b3-text-field")) {
+        if (document.activeElement && this.layout.element.contains(document.activeElement) &&
+            (document.activeElement.classList.contains("b3-text-field") ||
+                (document.activeElement as HTMLElement).getAttribute("contenteditable") === "true")) {
             return;
         }
         const dialogElement = document.querySelector(".b3-dialog") as HTMLElement;
@@ -662,6 +664,7 @@ export class Dock {
             if (isSaveLayout) {
                 this.saveLocalPlugin(type, {show: true});
             }
+            this.showDock();
         }
 
         // dock 中两个面板的显示关系
@@ -718,7 +721,6 @@ export class Dock {
             anotherWnd.element.style.width = "";
         }
         resizeTabs(isSaveLayout);
-        this.showDock();
         if (target.classList.contains("dock__item--active") && !removeDock && (type === "graph" || type === "globalGraph")) {
             const graph = this.data[type] as Graph;
             graph.onGraph(false);

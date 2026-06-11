@@ -115,12 +115,21 @@ declare namespace Config {
      */
     export interface IAI {
         openAI: IOpenAI;
+        providers?: IOpenAI[];
     }
 
     /**
      * Open AI related configuration
      */
     export interface IOpenAI {
+        /**
+         * Immutable unique identifier
+         */
+        id?: string;
+        /**
+         * Display name, defaults to apiModel
+         */
+        name?: string;
         /**
          * API base URL
          */
@@ -179,17 +188,13 @@ declare namespace Config {
          */
         apiVersion: string;
         /**
-         * Embedding API key (empty if not configured)
+         * Provider type: empty or "chat" = chat model, "embedding" = embedding model
          */
-        embeddingAPIKey: string;
+        type?: string;
         /**
-         * Embedding API base URL
+         * Whether this provider is enabled
          */
-        embeddingBaseURL: string;
-        /**
-         * Embedding model name
-         */
-        embeddingModel: string;
+        enabled?: boolean;
     }
 
     /**

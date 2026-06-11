@@ -55,6 +55,7 @@ import (
 	"github.com/siyuan-note/filelock"
 	"github.com/siyuan-note/httpclient"
 	"github.com/siyuan-note/logging"
+	"github.com/siyuan-note/siyuan/kernel/cache"
 	"github.com/siyuan-note/siyuan/kernel/conf"
 	"github.com/siyuan-note/siyuan/kernel/sql"
 	"github.com/siyuan-note/siyuan/kernel/task"
@@ -967,7 +968,7 @@ func initDataRepo() {
 	time.Sleep(1 * time.Second)
 	util.PushMsg(Conf.Language(138), 3000)
 	time.Sleep(1 * time.Second)
-	if initErr := IndexRepo("[Init] Init local data repo"); nil != initErr {
+	if _, initErr := IndexRepo("[Init] Init local data repo"); nil != initErr {
 		util.PushErrMsg(fmt.Sprintf(Conf.Language(140), initErr), 0)
 	}
 }
@@ -1011,6 +1012,9 @@ func checkoutRepo(id string) {
 	syncEnabled := Conf.Sync.Enabled
 	Conf.Sync.Enabled = false
 	Conf.Save()
+	if syncEnabled {
+		util.PushMsg(Conf.Language(134), 0)
+	}
 
 	// 回滚快照时默认为当前数据创建一个快照
 	// When rolling back a snapshot, a snapshot is created for the current data by default https://github.com/siyuan-note/siyuan/issues/12470
@@ -1032,10 +1036,9 @@ func checkoutRepo(id string) {
 	}
 
 	FullReindexDirect()
-
-	if syncEnabled {
-		task.AppendAsyncTaskWithDelay(task.PushMsg, 7*time.Second, util.PushMsg, Conf.Language(134), 0)
-	}
+	time.Sleep(time.Second)
+	FlushTxQueue()
+	task.AppendAsyncTaskWithDelay(task.ReloadUI, 1*time.Second, util.ReloadUI)
 	return
 }
 
@@ -1303,7 +1306,7 @@ func TagSnapshot(id, name string) (err error) {
 	return
 }
 
-func IndexRepo(memo string) (err error) {
+func IndexRepo(memo string) (id string, err error) {
 	if 1 > len(Conf.Repo.Key) {
 		err = errors.New(Conf.Language(26))
 		return
@@ -1333,6 +1336,7 @@ func IndexRepo(memo string) (err error) {
 		util.PushStatusBar("Index data repo failed: " + html.EscapeString(err.Error()))
 		return
 	}
+	id = index.ID
 	elapsed := time.Since(start)
 
 	if nil == latest || latest.ID != index.ID {
@@ -1892,6 +1896,10 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 		if file.Path == "/snippets/conf.json" {
 			needReloadSnippet = true
 		}
+
+		if strings.HasPrefix(file.Path, "/storage/av/") && strings.HasSuffix(file.Path, ".json") {
+			cache.RemoveAVData(strings.TrimSuffix(filepath.Base(file.Path), ".json"))
+		}
 	}
 
 	removeWidgetDirSet, unloadPluginSet, uninstallPluginSet := hashset.New(), hashset.New(), hashset.New()
@@ -1941,6 +1949,10 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 
 		if file.Path == "/snippets/conf.json" {
 			needReloadSnippet = true
+		}
+
+		if strings.HasPrefix(file.Path, "/storage/av/") && strings.HasSuffix(file.Path, ".json") {
+			cache.RemoveAVData(strings.TrimSuffix(filepath.Base(file.Path), ".json"))
 		}
 	}
 

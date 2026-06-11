@@ -964,7 +964,6 @@ export class WYSIWYG {
                     target.parentElement.parentElement.classList.add("img--drag");
                 }
 
-                const id = nodeElement.getAttribute("data-node-id");
                 const html = nodeElement.outerHTML;
                 const x = event.clientX;
                 const dragElement = target.previousElementSibling as HTMLElement;
@@ -1012,7 +1011,7 @@ export class WYSIWYG {
                     documentSelf.onselectstart = null;
                     documentSelf.onselect = null;
                     if (target.classList.contains("protyle-action__drag") && nodeElement) {
-                        updateTransaction(protyle, id, nodeElement.outerHTML, html);
+                        updateTransaction(protyle, nodeElement, html);
                     }
                     nodeElement.classList.remove("iframe--drag");
                     target.parentElement.parentElement.classList.remove("img--drag");
@@ -1054,7 +1053,6 @@ export class WYSIWYG {
                 nodeElement.firstElementChild.style.webkitUserModify = "read-only";
                 nodeElement.style.cursor = "col-resize";
                 target.removeAttribute("style");
-                const id = nodeElement.getAttribute("data-node-id");
                 const x = event.clientX;
                 const colIndex = parseInt(target.getAttribute("data-col-index"));
                 const colElement = nodeElement.querySelectorAll("table col")[colIndex] as HTMLElement;
@@ -1087,7 +1085,7 @@ export class WYSIWYG {
                     documentSelf.onselectstart = null;
                     documentSelf.onselect = null;
                     if (nodeElement) {
-                        updateTransaction(protyle, id, nodeElement.outerHTML, html);
+                        updateTransaction(protyle, nodeElement, html);
                     }
                 };
                 return;
@@ -1530,7 +1528,7 @@ export class WYSIWYG {
                                                 selectCellElements[0].rowSpan = rowSpan;
                                                 focusByWbr(selectCellElements[0], document.createRange());
                                                 document.execCommand("insertHTML", false, "");
-                                                updateTransaction(protyle, tableBlockElement.getAttribute("data-node-id"), tableBlockElement.outerHTML, oldHTML);
+                                                updateTransaction(protyle, tableBlockElement, oldHTML);
                                             }
                                         });
                                     }
@@ -1970,7 +1968,7 @@ export class WYSIWYG {
                 });
                 html += "</table>";
                 textPlain = protyle.lute.HTML2Md(html);
-                updateTransaction(protyle, nodeElement.getAttribute("data-node-id"), nodeElement.outerHTML, oldHTML);
+                updateTransaction(protyle, nodeElement, oldHTML);
             } else {
                 const id = nodeElement.getAttribute("data-node-id");
                 setInsertWbrHTML(nodeElement, range, protyle);
@@ -2096,7 +2094,7 @@ export class WYSIWYG {
                 if (nodeElement.parentElement.parentElement && !nodeElement.classList.contains("av")) {
                     // 选中 heading 时，使用删除的 transaction
                     setInsertWbrHTML(nodeElement, range, protyle);
-                    updateTransaction(protyle, id, protyle.wysiwyg.lastHTMLs[id] || nodeElement.outerHTML, oldHTML);
+                    updateTransaction(protyle, nodeElement, oldHTML);
                 }
             }
             protyle.hint.render(protyle);
@@ -2502,7 +2500,7 @@ export class WYSIWYG {
             } else {
                 const id = blockElement.getAttribute("data-node-id");
                 if (protyle.wysiwyg.lastHTMLs[id]) {
-                    updateTransaction(protyle, id, blockElement.outerHTML, protyle.wysiwyg.lastHTMLs[id]);
+                    updateTransaction(protyle, blockElement, protyle.wysiwyg.lastHTMLs[id]);
                 }
             }
         });
@@ -2592,7 +2590,8 @@ export class WYSIWYG {
             }
 
             if (event.eventPhase !== 3 && !event.shiftKey && (event.key.indexOf("Arrow") > -1 || event.key === "Home" || event.key === "End" || event.key === "PageUp" || event.key === "PageDown") && !event.isComposing) {
-                if (nodeElement) {
+                if (nodeElement && protyle.hint.element.classList.contains("fn__none") &&
+                    window.siyuan.menus.menu.element.classList.contains("fn__none")) {
                     clearSelect(["img", "av"], protyle.wysiwyg.element);
                     this.setEmptyOutline(protyle, nodeElement);
                     if (range.toString() === "" && !nodeElement.classList.contains("protyle-wysiwyg--select")) {
@@ -3070,7 +3069,7 @@ export class WYSIWYG {
                                     }
                                 }
                             });
-                            updateTransaction(protyle, actionElement.parentElement.parentElement.getAttribute("data-node-id"), actionElement.parentElement.parentElement.outerHTML, oldHTML);
+                            updateTransaction(protyle, actionElement.parentElement.parentElement, oldHTML);
                         }
                         hideElements(["gutter"], protyle);
                     } else if (event.shiftKey && !protyle.disabled) {
@@ -3091,7 +3090,8 @@ export class WYSIWYG {
                                     actionElement.parentElement.setAttribute("data-task", "X");
                                 }
                                 actionElement.parentElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
-                                updateTransaction(protyle, actionId, actionElement.parentElement.outerHTML, html);
+                                actionElement.parentElement.setAttribute(Constants.ATTRIBUTE_EDITING, "true");
+                                updateTransaction(protyle, actionElement.parentElement, html);
                             }
                         } else if (window.siyuan.config.editor.listItemDotNumberClickFocus) {
                             if (protyle.block.showAll && protyle.block.id === actionId) {
@@ -3177,7 +3177,7 @@ export class WYSIWYG {
                             }
                         }
                         calloutIconElement.innerHTML = emojiHTML;
-                        updateTransaction(protyle, nodeElement.getAttribute("data-node-id"), nodeElement.outerHTML, oldHTML);
+                        updateTransaction(protyle, nodeElement, oldHTML);
                         focusBlock(nodeElement);
                     }, calloutIconElement.querySelector("img"));
                 }
@@ -3210,7 +3210,7 @@ export class WYSIWYG {
                         }
                         emojiElement.outerHTML = emojiHTML;
                         hideElements(["dialog"]);
-                        updateTransaction(protyle, nodeElement.getAttribute("data-node-id"), nodeElement.outerHTML, oldHTML);
+                        updateTransaction(protyle, nodeElement, oldHTML);
                         focusByWbr(nodeElement, range);
                     }, emojiElement);
                 }

@@ -4,19 +4,47 @@ import {App} from "../../index";
 import {fetchAgentSSE, ISSEResult} from "../../util/agentSSE";
 import {mountComposer} from "./AgentComposer";
 import {AgentSession, SessionStore} from "./SessionStore";
+import {AgentSessionPanel} from "./AgentSessionPanel";
 import {getDockByType} from "../tabUtil";
 import {updateHotkeyAfterTip} from "../../protyle/util/compatibility";
-import {setPosition} from "../../util/setPosition";
+import {escapeHtml} from "../../util/escape";
+import {fetchPost} from "../../util/fetch";
+import {confirmDialog} from "../../dialog/confirmDialog";
+import * as dayjs from "dayjs";
+import {sendNotification} from "../../plugin/platformUtils";
+import {
+    bindThinkingCardToggle,
+    createThinkingCardElement,
+    postRender,
+    renderQuestionCardHTML,
+    renderRetryCardHTML,
+    renderTodoList,
+    renderToolsLineHTML,
+    renderWelcomeHTML
+} from "./AgentMessageRenderer";
 
-interface IAgentMessage {
-    role: "user" | "assistant";
-    content: string;
-    toolCalls?: Array<{
-        name: string;
-        arguments: Record<string, unknown>;
-        result?: string;
-    }>;
+type SessionEntry =
+    | { type: "user"; content: string; timestamp?: number }
+    | {
+    type: "thinking";
+    steps: Array<{
+        reasoning: string;
+        text: string;
+        toolCalls: Array<{ name: string; result?: string }>;
+        reasoningContent: string
+    }>
 }
+    | {
+    type: "assistant";
+    content: string;
+    toolCalls?: Array<{ name: string; arguments: Record<string, unknown>; result?: string }>;
+    promptTokens?: number;
+    completionTokens?: number;
+    duration?: number;
+    timestamp?: number
+}
+    | { type: "confirm"; name: string; args: Record<string, unknown>; confirmID: string; status?: string }
+    | { type: "snapshot"; snapshotID: string };
 
 export class AgentChat extends Model {
     private messagesContainer: HTMLElement;
@@ -27,10 +55,10 @@ export class AgentChat extends Model {
     private newSessionBtn: HTMLElement;
     private titleElement: HTMLElement;
     private sessionMenuBtn: HTMLElement;
-    private sessionPopup: HTMLElement | null = null;
+    private sessionPanel: AgentSessionPanel;
     private sessionId = "";
     private sessionTitle = "";
-    private messages: IAgentMessage[] = [];
+    private entries: SessionEntry[] = [];
     private hasTitled = false;
     private isStreaming = false;
     private currentAIElement: HTMLElement | null = null;
@@ -40,17 +68,35 @@ export class AgentChat extends Model {
     private sessionPromptTokens = 0;
     private sessionCompletionTokens = 0;
     private sessionTotalDuration = 0;
+    private responsePromptTokens = 0;
+    private responseCompletionTokens = 0;
     private sessionCreatedAt = 0;
     private requestStartTime = 0;
     private tokenDisplayEl: HTMLElement;
     private defaultTitle = "";
-    private currentToolCalls: Array<{name: string; arguments: Record<string, unknown>; result?: string}> = [];
+    private currentToolCalls: Array<{ name: string; arguments: Record<string, unknown>; result?: string }> = [];
     private abortController: AbortController | null = null;
-    private isRenderingSessionList = false;
-    private thinkingSteps: Array<{reasoning: string; text: string; toolCalls: Array<{name: string; result?: string}>; reasoningContent: string}> = [];
     private currentThinkingText = "";
     private currentThinkingReasoning = "";
     private currentThinkingReasoningContent = "";
+    private currentThinkingSteps: Array<{
+        reasoning: string;
+        text: string;
+        toolCalls: Array<{ name: string; result?: string }>;
+        reasoningContent: string;
+        content?: string
+    }> = [];
+    private currentThinkingStepContent = "";
+    private pendingConfirms: SessionEntry[] = [];
+    private renderedToolNames: Record<string, boolean> = {};
+    private hasInterveningCard = false;
+    private modelTrigger: HTMLElement;
+    private selectedModel: string;
+    private modelMenu: HTMLElement | null = null;
+    private modelMenuIndex = 0;
+    private modelOptions: Array<{ id: string; name: string }> = [];
+    private userScrolledUp = false;
+    private scrollBottomBtn: HTMLElement;
 
     constructor(app: App, tab: Tab) {
         super({app: app});
@@ -69,30 +115,36 @@ export class AgentChat extends Model {
         const L = window.siyuan.languages;
 
         panel.innerHTML = '<div class="agent-chat fn__flex-column fn__flex-1">' +
-    '<div class="block__icons fn__hidescrollbar">' +
-        '<div class="block__logo fn__flex-1 agent-chat__title">' + (L.agentChat || "Agent") + "</div>" +
-        '<span data-type="new-session" class="block__icon ariaLabel" data-position="north" aria-label="' + (L.agentNewSession || "New Session") + '">' +
+            '<div class="block__icons fn__hidescrollbar">' +
+            '<div class="block__logo fn__flex-1 agent-chat__title">' + (L.agentChat || "Agent") + "</div>" +
+            '<span data-type="new-session" class="block__icon ariaLabel" data-position="north" aria-label="' + (L.agentNewSession || "New Session") + '">' +
             '<svg><use xlink:href="#iconAdd"></use></svg>' +
-        "</span>" +
-        '<span class="fn__space"></span>' +
-        '<span data-type="session-menu" class="block__icon ariaLabel" data-position="north" aria-label="' + (L.more || "More") + '">' +
-            '<svg><use xlink:href="#iconMore"></use></svg>' +
-        "</span>" +
-        '<span class="fn__space"></span>' +
-        '<span data-type="min" class="block__icon ariaLabel" data-position="north" aria-label="' + window.siyuan.languages.min + updateHotkeyAfterTip(window.siyuan.config.keymap.general.closeTab.custom) + '">' +
+            "</span>" +
+            '<span class="fn__space"></span>' +
+            '<span data-type="session-menu" class="block__icon ariaLabel" data-position="north" aria-label="' + L.manageSessions + '">' +
+            '<svg><use xlink:href="#iconFolderClock"></use></svg>' +
+            "</span>" +
+            '<span class="fn__space"></span>' +
+            '<span data-type="min" class="block__icon ariaLabel" data-position="north" aria-label="' + window.siyuan.languages.min + updateHotkeyAfterTip(window.siyuan.config.keymap.general.closeTab.custom) + '">' +
             '<svg><use xlink:href="#iconMin"></use></svg>' +
-        "</span>" +
-    "</div>" +
-    '<div class="agent-chat__messages fn__flex-1"></div>' +
-    '<div class="agent-chat__input-area">' +
-        '<div class="agent-chat__composer-host"></div>' +
-        '<div class="agent-chat__buttons">' +
-            '<span class="agent-chat__tokens fn__none"></span>' +
-            '<button class="agent-chat__send b3-button b3-button--text">' + (L.agentSend || "Send") + "</button>" +
-            '<button class="agent-chat__stop b3-button b3-button--cancel fn__none">' + (L.agentStop || "Stop") + "</button>" +
+            "</span>" +
+            "</div>" +
+        '<div class="agent-chat__messages-wrap">' +
+            '<div class="agent-chat__messages fn__flex-1"></div>' +
+            '<span class="agent-chat__scroll-bottom ariaLabel" data-position="west" aria-label="' + L.scrollToBottom + '"><svg><use xlink:href="#iconArrowDown"></use></svg></span>' +
         "</div>" +
-    "</div>" +
-"</div>";
+        '<div class="agent-chat__input-area">' +
+            '<div class="agent-chat__composer-host"></div>' +
+            '<div class="agent-chat__buttons">' +
+            '<span class="agent-chat__model-trigger" tabindex="0"><span class="agent-chat__model-label"></span><svg><use xlink:href="#iconUp"></use></svg></span>' +
+            '<span class="agent-chat__tokens fn__none"></span>' +
+            '<span class="fn__flex-1"></span>' +
+            '<button class="agent-chat__send b3-button b3-button--text b3-tooltips b3-tooltips__n" aria-label="' + (L.agentSend || "Send") + '"><svg><use xlink:href="#iconCirclePlay"></use></svg></button>' +
+            '<button class="agent-chat__stop b3-button b3-button--cancel fn__none b3-tooltips b3-tooltips__n" aria-label="' + (L.agentStop || "Stop") + '"><svg><use xlink:href="#iconCircleStop"></use></svg></button>' +
+            "</div>" +
+            "</div>" +
+        '<div class="agent-chat__preview-notice">' + (L.featurePreview || "") + "</div>" +
+            "</div>";
 
         this.messagesContainer = panel.querySelector(".agent-chat__messages") as HTMLElement;
         this.composerHost = panel.querySelector(".agent-chat__composer-host") as HTMLElement;
@@ -102,273 +154,308 @@ export class AgentChat extends Model {
         this.sessionMenuBtn = panel.querySelector('.block__icon[data-type="session-menu"]') as HTMLElement;
         this.titleElement = panel.querySelector(".agent-chat__title") as HTMLElement;
         this.tokenDisplayEl = panel.querySelector(".agent-chat__tokens") as HTMLElement;
+        this.modelTrigger = panel.querySelector(".agent-chat__model-trigger") as HTMLElement;
+        this.scrollBottomBtn = panel.querySelector(".agent-chat__scroll-bottom") as HTMLElement;
+        this.messagesContainer.addEventListener("scroll", () => {
+            const { scrollTop, scrollHeight, clientHeight } = this.messagesContainer;
+            this.userScrolledUp = scrollHeight - scrollTop - clientHeight >= 20;
+            this.scrollBottomBtn.classList.toggle("agent-chat__scroll-bottom--visible", this.userScrolledUp);
+        });
 
-        const self = this;
-        this.composer = mountComposer(this.composerHost, function () { self.sendMessage(); });
+        this.initModelSelect();
+
+        this.composer = mountComposer(this.composerHost, () => {
+            this.sendMessage();
+        });
+        this.sessionPanel = new AgentSessionPanel(
+            this.sessionMenuBtn,
+            this.parent.panelElement,
+            () => this.sessionId,
+            () => this.defaultTitle,
+            {
+                onSwitch: (id) => this.switchSession(id),
+                onDelete: (id) => this.deleteSession(id),
+                onRename: async (id, title) => {
+                    await SessionStore.rename(id, title);
+                    if (id === this.sessionId) {
+                        this.sessionTitle = title;
+                        this.titleElement.textContent = title;
+                    }
+                },
+            }
+        );
         this.initSessions();
     }
 
-    private showWelcome() {
-        const L = window.siyuan.languages;
-        const html = '<div class="agent-welcome">' +
-            '<div class="agent-welcome__greeting">' + (L.agentWelcomeGreeting || "Hello, I am SiYuan Agent") + "</div>" +
-            '<div class="agent-welcome__examples">' +
-                '<div class="agent-welcome__example" data-text="' + this.escapeHtml(L.agentExample1 || "") + '">' + (L.agentExample1 || "") + "</div>" +
-                '<div class="agent-welcome__example" data-text="' + this.escapeHtml(L.agentExample2 || "") + '">' + (L.agentExample2 || "") + "</div>" +
-                '<div class="agent-welcome__example" data-text="' + this.escapeHtml(L.agentExample3 || "") + '">' + (L.agentExample3 || "") + "</div>" +
-            "</div>" +
-        "</div>";
-        this.messagesContainer.innerHTML = html;
-        const self = this;
-        const examples = this.messagesContainer.querySelectorAll(".agent-welcome__example");
-        for (let i = 0; i < examples.length; i++) {
-            examples[i].addEventListener("click", function (ex: HTMLElement) {
-                return function () {
-                    const text = ex.getAttribute("data-text") || "";
-                    if (text && self.composer) {
-                        // 不支持 setSendText，直接用 sendMessage 发送
-                        self.messages.push({role: "user", content: text});
-                        self.appendUserMessage(text);
-                        self.setStreaming(true);
-                        const apiMessages = self.messages.map(function (m) { return {role: m.role as "user" | "assistant", content: m.content}; });
-                        self.abortController = new AbortController();
-                        const requestSessionId = self.sessionId;
-                        fetchAgentSSE(apiMessages, window.siyuan.config.appearance.lang, [],
-                            function (event: ISSEResult) {
-                                if (self.sessionId !== requestSessionId) { return; }
-                                self.handleSSEEvent(event);
-                            },
-                            function (err: Error) {
-                                if (self.sessionId !== requestSessionId) { return; }
-                                self.handleError(err);
-                            },
-                            self.abortController.signal,
-                            self.sessionId);
-                    }
-                };
-            }(examples[i] as HTMLElement));
+    private initModelSelect() {
+        const aiConfig = window.siyuan.config.ai;
+        const displayName = aiConfig.openAI.name || aiConfig.openAI.apiModel;
+        this.modelOptions = [{ id: aiConfig.openAI.id, name: displayName }];
+        for (const p of aiConfig.providers || []) {
+            if (p.enabled === false) { continue; }
+            this.modelOptions.push({ id: p.id, name: p.name || p.apiModel || p.id });
         }
+        this.selectedModel = aiConfig.openAI.id;
+        this.updateModelLabel();
+        this.modelTrigger.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            if (this.modelMenu) {
+                this.closeModelMenu();
+            } else {
+                this.openModelMenu();
+            }
+        });
+        this.modelTrigger.addEventListener("keydown", (e: KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                if (this.modelMenu) {
+                    const option = this.modelOptions[this.modelMenuIndex];
+                    if (option) {
+                        this.selectedModel = option.id;
+                        this.updateModelLabel();
+                    }
+                    this.closeModelMenu();
+                } else {
+                    this.openModelMenu();
+                }
+            } else if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (!this.modelMenu) { this.openModelMenu(); return; }
+                this.modelMenuIndex = (this.modelMenuIndex + 1) % this.modelOptions.length;
+                this.updateModelMenuHighlight();
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (!this.modelMenu) { this.openModelMenu(); return; }
+                this.modelMenuIndex = (this.modelMenuIndex - 1 + this.modelOptions.length) % this.modelOptions.length;
+                this.updateModelMenuHighlight();
+            } else if (e.key === "Escape" && this.modelMenu) {
+                this.closeModelMenu();
+            }
+        });
+    }
+
+    private updateModelLabel() {
+        const label = this.modelTrigger.querySelector(".agent-chat__model-label") as HTMLElement;
+        const option = this.modelOptions.find((o) => o.id === this.selectedModel);
+        if (label && option) { label.textContent = option.name; }
+    }
+
+    private openModelMenu() {
+        this.closeModelMenu();
+        this.modelMenuIndex = this.modelOptions.findIndex((o) => o.id === this.selectedModel);
+        if (this.modelMenuIndex < 0) { this.modelMenuIndex = 0; }
+        const menu = document.createElement("div");
+        menu.className = "agent-chat__model-menu b3-menu";
+        let html = '<div class="b3-menu__items">';
+        for (let i = 0; i < this.modelOptions.length; i++) {
+            const o = this.modelOptions[i];
+            const isSelected = o.id === this.selectedModel;
+            html += '<div class="agent-chat__model-item b3-menu__item' + (isSelected ? " b3-menu__item--current" : "") + '" data-i="' + i + '" data-id="' + o.id + '">' +
+                '<span class="b3-menu__label">' + escapeHtml(o.name) + "</span>" +
+                '<svg class="agent-chat__model-check"><use xlink:href="#iconSelect"></use></svg>' +
+            "</div>";
+        }
+        html += "</div>";
+        menu.innerHTML = html;
+        this.modelTrigger.appendChild(menu);
+        this.modelMenu = menu;
+        this.updateModelMenuHighlight();
+        menu.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            const item = (e.target as HTMLElement).closest(".agent-chat__model-item") as HTMLElement;
+            if (item) {
+                this.selectedModel = item.getAttribute("data-id") || this.selectedModel;
+                this.updateModelLabel();
+                this.closeModelMenu();
+            }
+        });
+        setTimeout(() => {
+            document.addEventListener("click", this.closeModelMenuHandler);
+        }, 10);
+    }
+
+    private closeModelMenuHandler = () => {
+        this.closeModelMenu();
+        document.removeEventListener("click", this.closeModelMenuHandler);
+    };
+
+    private closeModelMenu() {
+        if (this.modelMenu) {
+            this.modelMenu.remove();
+            this.modelMenu = null;
+        }
+        document.removeEventListener("click", this.closeModelMenuHandler);
+    }
+
+    private updateModelMenuHighlight() {
+        if (!this.modelMenu) { return; }
+        const items = this.modelMenu.querySelectorAll(".agent-chat__model-item");
+        for (let i = 0; i < items.length; i++) {
+            items[i].classList.toggle("b3-menu__item--highlight", i === this.modelMenuIndex);
+        }
+        const current = items[this.modelMenuIndex] as HTMLElement;
+        if (current) { current.scrollIntoView({ block: "nearest" }); }
+    }
+
+    private getSelectedModel(): string {
+        return this.selectedModel;
+    }
+
+    private showWelcome() {
+        this.messagesContainer.innerHTML = renderWelcomeHTML();
+        const examples = this.messagesContainer.querySelectorAll(".agent-welcome__example");
+        examples.forEach((example) => {
+            const ex = example as HTMLElement;
+            ex.addEventListener("click", () => {
+                const text = ex.getAttribute("data-text") || "";
+                if (text && this.composer) {
+                    this.messagesContainer.innerHTML = "";
+                    this.entries.push({type: "user", content: text, timestamp: Date.now()});
+                    this.appendUserMessage(text, Date.now());
+                    this.tryGenerateTitle();
+                    this.setStreaming(true);
+                    const apiMessages = this.entries.filter((e) => e.type === "user" || e.type === "assistant").map((e) => ({
+                        role: e.type === "user" ? "user" as const : "assistant" as const,
+                        content: (e as { content: string }).content
+                    }));
+                    this.abortController = new AbortController();
+                    const requestSessionId = this.sessionId;
+                    this.requestStartTime = Date.now();
+                    fetchAgentSSE(apiMessages, window.siyuan.config.appearance.lang, [],
+                        (event: ISSEResult) => {
+                            if (this.sessionId !== requestSessionId) {
+                                return;
+                            }
+                            this.handleSSEEvent(event);
+                        },
+                        (err: Error) => {
+                            if (this.sessionId !== requestSessionId) {
+                                return;
+                            }
+                            this.handleError(err);
+                        },
+                        this.abortController.signal,
+                        this.sessionId,
+                        this.getSelectedModel());
+                }
+            });
+        });
     }
 
     private bindEvents() {
-        const self = this;
-        this.sendBtn.addEventListener("click", function (e: MouseEvent) { e.stopPropagation(); self.sendMessage(); });
-        this.stopBtn.addEventListener("click", function (e: MouseEvent) { e.stopPropagation(); self.stopGeneration(); });
-        this.newSessionBtn.addEventListener("click", function (e: MouseEvent) { e.stopPropagation(); self.createSession(); });
-        this.sessionMenuBtn.addEventListener("click", function (e: MouseEvent) {
+        this.sendBtn.addEventListener("click", (e: MouseEvent) => {
             e.stopPropagation();
-            self.toggleSessionMenu();
+            this.sendMessage();
+        });
+        this.stopBtn.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            void this.stopGeneration();
+        });
+        this.newSessionBtn.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            this.createSession();
+        });
+        this.sessionMenuBtn.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            this.sessionPanel.toggle();
         });
 
-        this.parent.panelElement.addEventListener("click", function (e: MouseEvent) {
+        this.parent.panelElement.addEventListener("click", (e: MouseEvent) => {
             const t = e.target as HTMLElement;
-            if (t.closest(".block__icons")) { return; }
-            if (t.closest(".agent-chat__msg")) { return; }
-            if (t.closest(".agent-chat__header")) { return; }
-            if (t.closest(".agent-session-popup")) { return; }
+            if (t.closest(".block__icons")) {
+                return;
+            }
+            if (t.closest(".agent-chat__msg")) {
+                return;
+            }
+            if (t.closest(".agent-chat__header")) {
+                return;
+            }
+            if (t.closest(".agent-session-popup")) {
+                return;
+            }
             if (t.closest('[data-type="min"]')) {
                 getDockByType("agentChat").toggleModel("agentChat", false, true);
                 return;
             }
-            if (self.composer) { self.composer.focus(); }
+            if (t.closest(".agent-chat__model-trigger") || t.closest(".agent-chat__model-menu")) {
+                return;
+            }
+            if (this.composer) {
+                this.composer.focus();
+            }
+        });
+        this.scrollBottomBtn.addEventListener("click", () => {
+            this.scrollToBottom(true);
         });
     }
 
     private async initSessions() {
-        await SessionStore.init();
-        const list = await SessionStore.list();
+        const list = await SessionStore.init();
         if (list.length > 0) {
-            list.sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+            list.sort((a, b) => b.createdAt - a.createdAt);
             const last = list[0];
             const session = await SessionStore.load(last.id);
             if (session) {
                 this.sessionId = session.id;
                 this.sessionCreatedAt = session.createdAt || Date.now();
                 this.sessionTitle = session.title;
-                this.messages = session.messages as IAgentMessage[];
-                this.hasTitled = true;
+                this.entries = this.buildEntriesFromSession(session);
+                this.hasTitled = session.titled !== false;
                 this.sessionPromptTokens = session.promptTokens || 0;
                 this.sessionCompletionTokens = session.completionTokens || 0;
                 this.sessionTotalDuration = session.totalDuration || 0;
+                if (session.model) {
+                    this.selectedModel = session.model;
+                    this.updateModelLabel();
+                }
                 if (this.composer) {
                     this.composer.restoreHistory(session.messageHistory || []);
                 }
                 this.titleElement.textContent = session.title;
                 this.updateTokenDisplay();
-                let thinkingIdx = 0;
-                const steps = session.thinkingSteps || [];
-                for (let i = 0; i < session.messages.length; i++) {
-                    const msg = session.messages[i];
-                    if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0 && thinkingIdx < steps.length) {
-                        this.renderSingleThinkingCard(steps[thinkingIdx]);
-                        thinkingIdx++;
-                    }
-                    if (msg.role === "user") {
-                        this.appendUserMessage(msg.content);
-                    } else if (msg.role === "assistant") {
-                        if (msg.toolCalls && msg.toolCalls.length > 0) {
-                            this.appendPersistedToolCalls(msg.content, msg.toolCalls);
-                        } else {
-                            this.appendPersistedAssistant(msg.content);
-                        }
-                    }
-                }
-                this.scrollToBottom();
+                this.renderLoadedSession(session);
+                this.scrollToBottom(true);
                 return;
             }
         }
         this.sessionId = SessionStore.newSessionId();
         this.sessionCreatedAt = Date.now();
         this.sessionTitle = this.defaultTitle;
-        this.messages = [];
+        this.entries = [];
         this.showWelcome();
-    }
-
-    private toggleSessionMenu() {
-        if (this.isRenderingSessionList) { return; }
-        if (this.sessionPopup) {
-            this.closeSessionMenu();
-            return;
-        }
-        const self = this;
-        this.renderSessionList();
-    }
-
-    private closeSessionMenu() {
-        document.querySelectorAll(".agent-session-popup").forEach(function (el) { el.remove(); });
-        this.sessionPopup = null;
-    }
-
-    private async renderSessionList() {
-        const self = this;
-        this.isRenderingSessionList = true;
-        this.closeSessionMenu();
-        try {
-            const list = await SessionStore.list();
-        list.sort(function (a, b) { return b.updatedAt - a.updatedAt; });
-
-        this.sessionPopup = document.createElement("div");
-        this.sessionPopup.className = "agent-session-popup b3-menu";
-
-        let html = '<div class="b3-menu__items">';
-        if (list.length === 0) {
-            html += '<div class="b3-menu__item"><span class="b3-menu__label" style="text-align:center;color:var(--b3-theme-on-surface-light)">' + (window.siyuan.languages.emptyContent || "No sessions") + "</span></div>";
-        } else {
-            for (let i = 0; i < list.length; i++) {
-                const s = list[i];
-            const isActive = s.id === this.sessionId;
-            html += '<div class="b3-menu__item' + (isActive ? " b3-menu__item--current" : "") + '" data-id="' + s.id + '">' +
-                '<span class="b3-menu__label ariaLabel" data-position="east" aria-label="' + this.escapeHtml(s.title || this.defaultTitle) + '">' + this.escapeHtml(s.title || this.defaultTitle) + "</span>" +
-                '<span class="agent-session-popup__actions">' +
-                    '<span class="agent-session-popup__rename" data-id="' + s.id + '">&#9998;</span>' +
-                    '<span class="agent-session-popup__delete" data-id="' + s.id + '">&#10005;</span>' +
-                    "</span>" +
-                "</div>";
-            }
-        }
-        html += "</div>";
-
-        this.sessionPopup.innerHTML = html;
-
-        this.sessionPopup.querySelectorAll(".b3-menu__item").forEach(function (item) {
-            item.addEventListener("click", function (e) {
-                const id = item.getAttribute("data-id") || "";
-                if (id && id !== self.sessionId) {
-                    self.closeSessionMenu();
-                    self.switchSession(id);
-                }
-            });
-        });
-        this.sessionPopup.querySelectorAll(".agent-session-popup__delete").forEach(function (btn) {
-            btn.addEventListener("click", function (e: MouseEvent) {
-                e.stopPropagation();
-                const id = btn.getAttribute("data-id") || "";
-                if (id) { self.deleteSession(id); }
-            });
-        });
-        this.sessionPopup.querySelectorAll(".agent-session-popup__rename").forEach(function (btn) {
-            btn.addEventListener("click", function (e: MouseEvent) {
-                e.stopPropagation();
-                const id = btn.getAttribute("data-id") || "";
-                if (id) {
-                    const parent = btn.parentElement;
-                    const row = parent ? parent.parentElement as HTMLElement : null;
-                    if (row) { self.startRename(id, row); }
-                }
-            });
-        });
-
-        this.parent.panelElement.appendChild(this.sessionPopup);
-
-        const btnRect = this.sessionMenuBtn.getBoundingClientRect();
-        setPosition(this.sessionPopup, btnRect.right - 280, btnRect.bottom, btnRect.height, btnRect.width);
-
-        const self2 = this;
-        this.sessionPopup.addEventListener("click", function (e: MouseEvent) {
-            e.stopPropagation();
-        });
-        setTimeout(function () {
-            document.addEventListener("click", function closeOut() {
-                self2.closeSessionMenu();
-                document.removeEventListener("click", closeOut);
-            });
-        }, 10);
-        } finally {
-            this.isRenderingSessionList = false;
-        }
-    }
-
-    private startRename(id: string, rowEl: HTMLElement) {
-        const self = this;
-        const titleEl = rowEl.querySelector(".b3-menu__label") as HTMLElement;
-        const oldTitle = titleEl.textContent || "";
-        const input = document.createElement("input");
-        input.type = "text";
-        input.value = oldTitle;
-        input.className = "agent-session-popup__rename-input";
-        titleEl.replaceWith(input);
-        input.focus();
-        input.select();
-        input.addEventListener("blur", function () { self.finishRename(id, input.value, input, titleEl); });
-        input.addEventListener("keydown", function (e: KeyboardEvent) {
-            if (e.key === "Enter") { input.blur(); }
-            if (e.key === "Escape") { input.value = oldTitle; input.blur(); }
-        });
-    }
-
-    private async finishRename(id: string, newTitle: string, input: HTMLInputElement, titleEl: HTMLElement) {
-        const title = newTitle.trim() || this.defaultTitle;
-        input.replaceWith(titleEl);
-        titleEl.textContent = title;
-        await SessionStore.rename(id, title);
-        if (id === this.sessionId) {
-            this.sessionTitle = title;
-            this.titleElement.textContent = title;
-        }
+        this.scrollToBottom(true);
     }
 
     private async saveSession() {
-        if (this.messages.length === 0) { return; }
+        if (this.entries.length === 0) {
+            return;
+        }
         const session: AgentSession = {
             id: this.sessionId,
             title: this.sessionTitle,
-            messages: this.messages.slice(),
+            titled: this.hasTitled,
+            entries: this.entries.slice(),
             promptTokens: this.sessionPromptTokens,
             completionTokens: this.sessionCompletionTokens,
             totalDuration: this.sessionTotalDuration,
             createdAt: this.sessionCreatedAt,
             updatedAt: Date.now(),
             messageHistory: this.composer?.getHistory() || [],
-            thinkingSteps: this.thinkingSteps,
+            model: this.getSelectedModel(),
         };
         await SessionStore.save(session);
     }
 
     private async switchSession(id: string) {
         this.setStreaming(false);
+        this.finishActiveThinking();
+        this.flushThinkingStep();
         await this.saveSession();
         const session = await SessionStore.load(id);
-        if (!session) { return; }
+        if (!session) {
+            return;
+        }
         this.sessionId = session.id;
         if (this.composer) {
             this.composer.clearHistory();
@@ -376,62 +463,160 @@ export class AgentChat extends Model {
         }
         this.sessionCreatedAt = session.createdAt || Date.now();
         this.sessionTitle = session.title;
-        this.messages = session.messages as IAgentMessage[];
-        this.hasTitled = true;
+        this.entries = this.buildEntriesFromSession(session);
+        this.hasTitled = session.titled !== false;
         this.currentAIElement = null;
         this.currentContent = "";
         this.fullContent = "";
         this.sessionPromptTokens = session.promptTokens || 0;
         this.sessionCompletionTokens = session.completionTokens || 0;
         this.sessionTotalDuration = session.totalDuration || 0;
+        if (session.model) {
+            this.selectedModel = session.model;
+            this.updateModelLabel();
+        }
         if (this.tokenDisplayEl) {
             this.updateTokenDisplay();
         }
-        this.messagesContainer.innerHTML = "";
-        this.titleElement.textContent = session.title;
-        let thinkingIdx = 0;
-        const steps = session.thinkingSteps || [];
-        for (let i = 0; i < session.messages.length; i++) {
-            const msg = session.messages[i];
-            if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0 && thinkingIdx < steps.length) {
-                this.renderSingleThinkingCard(steps[thinkingIdx]);
-                thinkingIdx++;
-            }
-            if (msg.role === "user") {
-                this.appendUserMessage(msg.content);
-            } else if (msg.role === "assistant") {
-                if (msg.toolCalls && msg.toolCalls.length > 0) {
-                    this.appendPersistedToolCalls(msg.content, msg.toolCalls);
-                } else {
-                    this.appendPersistedAssistant(msg.content);
-                }
-            }
-        }
-        this.scrollToBottom();
+        this.messagesContainer.classList.add("agent-chat__messages--switching");
+        this.messagesContainer.addEventListener("transitionend", () => {
+            this.messagesContainer.innerHTML = "";
+            this.titleElement.textContent = session.title;
+            this.renderLoadedSession(session);
+            this.scrollToBottom(true);
+            this.messagesContainer.classList.remove("agent-chat__messages--switching");
+        }, {once: true});
     }
 
-    private appendPersistedAssistant(content: string) {
+    private appendPersistedAssistant(content: string, promptTokens?: number, completionTokens?: number, duration?: number, timestamp?: number) {
+        if (!content || !content.trim()) {
+            return;
+        }
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--ai";
-        el.innerHTML = '<div class="agent-chat__bubble">' + (this.lute.MarkdownStr("", content) || this.escapeHtml(content)) + "</div>";
+        el.innerHTML = '<div class="agent-chat__body">' + (this.lute.MarkdownStr("", content) || escapeHtml(content)) + "</div>";
         this.messagesContainer.appendChild(el);
-        this.addCopyButton(el, content);
+        postRender(el);
+        this.addCopyButton(el, content, promptTokens, completionTokens, duration, timestamp);
     }
 
-    private appendPersistedToolCalls(content: string, toolCalls: Array<{name: string; arguments: Record<string, unknown>; result?: string}>) {
-        // Only render todo_write cards, skip other tool calls
+    private appendPersistedToolCalls(content: string, toolCalls: Array<{
+        name: string;
+        arguments: Record<string, unknown>;
+        result?: string
+    }>, promptTokens?: number, completionTokens?: number, duration?: number, timestamp?: number) {
+        let hasRendered = false;
         for (let i = 0; i < toolCalls.length; i++) {
             const tc = toolCalls[i];
             if (tc.result && tc.name === "todo_write") {
                 const rel = document.createElement("div");
                 rel.className = "agent-chat__msg agent-chat__msg--tool";
-                rel.innerHTML = this.renderTodoList(tc.result);
+                rel.innerHTML = renderTodoList(tc.result);
                 this.messagesContainer.appendChild(rel);
+                hasRendered = true;
             }
         }
-        if (content) {
-            this.appendPersistedAssistant(content);
+        if (content && content.trim()) {
+            this.appendPersistedAssistant(content, promptTokens, completionTokens, duration, timestamp);
+            hasRendered = true;
         }
+        if (!hasRendered) {
+            // 无可见内容，不创建 air 空 DOM
+            return;
+        }
+    }
+
+    private appendPersistedConfirm(entry: {
+        name: string;
+        args: Record<string, unknown>;
+        confirmID: string;
+        status?: string
+    }) {
+        const L = window.siyuan.languages;
+        const el = document.createElement("div");
+        el.className = "agent-chat__msg agent-chat__msg--confirm agent-chat__msg--confirmed";
+        const argsStr = JSON.stringify(entry.args, null, 2);
+        const action = this.toolActionLabel((entry.args.action as string) || entry.name);
+        const objName = this.objectLabel(entry.args);
+        const desc = (L.agentConfirmDesc || "Agent will {action}: {name}").replace("{action}", escapeHtml(action)).replace("{name}", escapeHtml(objName));
+        let statusLabel = "";
+        if (entry.status === "approved") {
+            statusLabel = L.agentConfirmApprove || "Approved";
+        } else if (entry.status === "rejected") {
+            statusLabel = L.agentConfirmReject || "Rejected";
+        } else if (entry.status === "always") {
+            statusLabel = L.agentConfirmAlways || "Session Allow";
+        }
+        el.innerHTML = '<div class="agent-chat__confirm-card">' +
+            '<div class="agent-chat__confirm-header"><svg class="agent-chat__confirm-icon"><use xlink:href="#iconInfo"></use></svg> ' + desc + "</div>" +
+            '<pre class="agent-chat__confirm-args">' + escapeHtml(argsStr) + "</pre>" +
+            (statusLabel ? '<div class="agent-chat__confirm-actions"><span class="agent-chat__confirm-done">' + statusLabel + "</span></div>" : "") +
+            "</div>";
+        this.messagesContainer.appendChild(el);
+    }
+
+    private renderLoadedSession(session: AgentSession) {
+        for (let i = 0; i < session.entries.length; i++) {
+            const entry = session.entries[i];
+            switch (entry.type) {
+                case "user":
+                    this.appendUserMessage((entry as { content: string }).content, (entry as { timestamp?: number }).timestamp);
+                    break;
+                case "thinking":
+                    if (entry.steps && entry.steps.length > 0) {
+                        this.renderMergedThinkingCard((entry as {
+                            steps: Array<{
+                                reasoning: string;
+                                text: string;
+                                toolCalls: Array<{ name: string; result?: string }>;
+                                reasoningContent: string
+                            }>
+                        }).steps);
+                    }
+                    break;
+                case "assistant":
+                    const a = entry as { content: string; toolCalls?: Array<{ name: string; arguments: Record<string, unknown>; result?: string }>; promptTokens?: number; completionTokens?: number; duration?: number; timestamp?: number };
+                    if (a.toolCalls && a.toolCalls.length > 0) {
+                        this.appendPersistedToolCalls(a.content, a.toolCalls, a.promptTokens, a.completionTokens, a.duration, a.timestamp);
+                    } else {
+                        this.appendPersistedAssistant(a.content, a.promptTokens, a.completionTokens, a.duration, a.timestamp);
+                    }
+                    break;
+                case "confirm":
+                    this.appendPersistedConfirm(entry as unknown as {
+                        name: string;
+                        args: Record<string, unknown>;
+                        confirmID: string;
+                        status?: string
+                    });
+                    break;
+                case "snapshot":
+                    this.appendSnapshotInfo((entry as { snapshotID: string }).snapshotID);
+                    break;
+            }
+        }
+    }
+
+    private buildEntriesFromSession(session: AgentSession): SessionEntry[] {
+        if (session.messages && session.messages.length > 0) {
+            const entriesLen = session.entries ? session.entries.length : 0;
+            if (session.messages.length > entriesLen) {
+                const entries: SessionEntry[] = [];
+                for (let i = 0; i < session.messages.length; i++) {
+                    const msg = session.messages[i];
+                    if (msg.role === "user") {
+                        entries.push({type: "user", content: msg.content});
+                    } else if (msg.role === "assistant") {
+                        entries.push({type: "assistant", content: msg.content});
+                    }
+                }
+                return entries;
+            }
+        }
+        if (session.entries && session.entries.length > 0) {
+            return session.entries as any as SessionEntry[];
+        }
+        return [];
     }
 
     private async createSession() {
@@ -440,37 +625,53 @@ export class AgentChat extends Model {
             this.abortController = null;
         }
         this.setStreaming(false);
+        this.finishActiveThinking();
+        this.flushThinkingStep();
         await this.saveSession();
         this.sessionId = SessionStore.newSessionId();
         this.sessionCreatedAt = Date.now();
-        if (this.composer) { this.composer.clearHistory(); }
+        if (this.composer) {
+            this.composer.clearHistory();
+        }
         this.sessionTitle = this.defaultTitle;
-        this.messages = [];
+        this.entries = [];
         this.hasTitled = false;
         this.currentAIElement = null;
         this.currentContent = "";
         this.fullContent = "";
-        this.thinkingSteps = [];
         this.sessionPromptTokens = 0;
         this.sessionCompletionTokens = 0;
         this.sessionTotalDuration = 0;
+        this.responsePromptTokens = 0;
+        this.responseCompletionTokens = 0;
         this.currentToolCalls = [];
+        this.renderedToolNames = {};
+        this.hasInterveningCard = false;
         if (this.tokenDisplayEl) {
             this.tokenDisplayEl.classList.add("fn__none");
         }
         this.messagesContainer.innerHTML = "";
+        this.currentThinkingSteps = [];
+        this.currentThinkingStepContent = "";
+        this.pendingConfirms = [];
         this.titleElement.textContent = this.defaultTitle;
-        if (this.composer) { this.composer.clear(); }
-        if (this.composer) { this.composer.focus(); }
+        if (this.composer) {
+            this.composer.clear();
+        }
+        if (this.composer) {
+            this.composer.focus();
+        }
         this.showWelcome();
+        this.scrollToBottom(true);
     }
 
     private async deleteSession(id: string) {
         await SessionStore.remove(id);
         const wasCurrent = id === this.sessionId;
         if (wasCurrent) {
-            const list = await SessionStore.list();
-            this.messages = [];
+            const result = await SessionStore.list({page: 1, pageSize: 1});
+            const list = result.sessions;
+            this.entries = [];
             if (list.length > 0) {
                 this.sessionId = list[0].id;
                 await this.switchSession(list[0].id);
@@ -479,36 +680,12 @@ export class AgentChat extends Model {
                 await this.createSession();
             }
         }
-
-        // Remove the deleted row from popup DOM directly (no re-render flash)
-        const row = this.sessionPopup?.querySelector('.b3-menu__item[data-id="' + id + '"]');
-        if (row) {
-            row.remove();
-        }
-        const items = this.sessionPopup?.querySelectorAll(".b3-menu__item");
-        if (items && items.length === 0) {
-            const listEl = this.sessionPopup?.querySelector(".b3-menu__items");
-            if (listEl) {
-                listEl.innerHTML = '<div class="b3-menu__item"><span class="b3-menu__label" style="text-align:center;color:var(--b3-theme-on-surface-light)">' + (window.siyuan.languages.emptyContent || "No sessions") + "</span></div>";
-            }
-        }
-        if (wasCurrent && this.sessionPopup) {
-            this.highlightCurrentSession();
-        }
     }
 
-    private highlightCurrentSession() {
-        const items = this.sessionPopup?.querySelectorAll(".b3-menu__item");
-        if (!items) { return; }
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i] as HTMLElement;
-            const sid = item.getAttribute("data-id");
-            item.classList.toggle("b3-menu__item--current", sid === this.sessionId);
+    private async sendMessage() {
+        if (!this.composer) {
+            return;
         }
-    }
-
-    private sendMessage() {
-        if (!this.composer) { return; }
         const sendData = this.composer.getSendData();
         const text = sendData.text;
         const refs = sendData.references;
@@ -517,39 +694,54 @@ export class AgentChat extends Model {
         }
 
         this.setStreaming(true);
+        this.clearThinking();
+        this.hasInterveningCard = false;
         this.composer.clear();
 
-        this.messages.push({role: "user", content: text});
-        this.appendUserMessage(text);
-        if (this.composer) { this.composer.pushHistory(text); }
-        this.saveSession().catch(function (e) { console.error(e); });
+        this.entries.push({type: "user", content: text, timestamp: Date.now()});
+        if (this.entries.length === 1) {
+            this.messagesContainer.innerHTML = "";
+        }
+        this.appendUserMessage(text, Date.now());
+        this.tryGenerateTitle();
+        if (this.composer) {
+            this.composer.pushHistory(text);
+        }
+        await this.saveSession();
 
         this.requestStartTime = Date.now();
 
-        const apiMessages = this.messages.map(function (m) { return {role: m.role as "user" | "assistant", content: m.content}; });
-        const self = this;
+        const apiMessages = this.entries.filter((e) => e.type === "user" || e.type === "assistant").map((e) => ({
+            role: e.type === "user" ? "user" as const : "assistant" as const,
+            content: (e as { content: string }).content
+        }));
 
         this.abortController = new AbortController();
         const requestSessionId = this.sessionId;
 
-        fetchAgentSSE(
+        await fetchAgentSSE(
             apiMessages,
             window.siyuan.config.appearance.lang,
             refs,
-            function (event: ISSEResult) {
-                if (self.sessionId !== requestSessionId) { return; }
-                self.handleSSEEvent(event);
+            (event: ISSEResult) => {
+                if (this.sessionId !== requestSessionId) {
+                    return;
+                }
+                return this.handleSSEEvent(event);
             },
-            function (err: Error) {
-                if (self.sessionId !== requestSessionId) { return; }
-                self.handleError(err);
+            (err: Error) => {
+                if (this.sessionId !== requestSessionId) {
+                    return;
+                }
+                return this.handleError(err);
             },
             this.abortController.signal,
             this.sessionId,
+            this.getSelectedModel(),
         );
     }
 
-    private handleSSEEvent(event: ISSEResult) {
+    private async handleSSEEvent(event: ISSEResult) {
         try {
             switch (event.type) {
                 case "content":
@@ -560,7 +752,6 @@ export class AgentChat extends Model {
                     break;
                 case "tool_call":
                     this.currentToolCalls.push({name: event.name, arguments: event.arguments});
-                    this.appendToolCall(event.name, event.arguments);
                     break;
                 case "confirm":
                     this.appendConfirm(event.name, event.arguments, event.confirmID);
@@ -573,7 +764,7 @@ export class AgentChat extends Model {
                     break;
                 case "done":
                     this.flushTokenUpdate();
-                    this.finishResponse();
+                    await this.finishResponse();
                     break;
                 case "usage":
                     this.appendUsage(event.promptTokens, event.completionTokens);
@@ -581,6 +772,7 @@ export class AgentChat extends Model {
                 case "error":
                     this.appendError(event.message);
                     this.setStreaming(false);
+                    await this.saveSession();
                     break;
                 case "retry":
                     this.appendRetry(event.attempt, event.maxRetries);
@@ -591,6 +783,10 @@ export class AgentChat extends Model {
                 case "reasoning":
                     this.appendReasoning(event.token);
                     break;
+                case "snapshot":
+                    this.entries.push({type: "snapshot", snapshotID: event.snapshotID});
+                    this.appendSnapshotInfo(event.snapshotID);
+                    break;
             }
         } catch (e) {
             console.error("agent SSE event handler error:", e, event);
@@ -598,25 +794,37 @@ export class AgentChat extends Model {
         }
     }
 
-    private handleError(err: Error) {
+    private async handleError(err: Error) {
         this.flushTokenUpdate();
         this.appendError(err.message);
         this.setStreaming(false);
+        await this.saveSession();
     }
 
-    private appendUserMessage(text: string) {
+    private appendUserMessage(text: string, timestamp?: number) {
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--user";
-        el.innerHTML = '<div class="agent-chat__bubble">' + this.escapeHtml(text) + "</div>";
+        let html = '<div class="agent-chat__body">' + escapeHtml(text) + "</div>";
+        html += '<div class="agent-chat__msg-actions">';
+        if (timestamp) {
+            html += '<span class="agent-chat__msg-meta agent-chat__msg-time">' + this.formatMessageTime(timestamp) + "</span>";
+        }
+        html += '<span class="block__icon block__icon--show ariaLabel" data-position="north" aria-label="' + window.siyuan.languages.copy + '"><svg><use xlink:href="#iconCopy"></use></svg></span>' +
+        "</div>";
+        el.innerHTML = html;
+        el.querySelector(".block__icon")?.addEventListener("click", (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(text).catch(() => {});
+        });
         this.messagesContainer.appendChild(el);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
     }
 
     private createAIMessagePlaceholder(): HTMLElement {
         this.currentContent = "";
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--ai";
-        el.innerHTML = '<div class="agent-chat__bubble agent-chat__bubble--streaming"></div>';
+        el.innerHTML = '<div class="agent-chat__body agent-chat__body--streaming"></div>';
         this.messagesContainer.appendChild(el);
         this.scrollToBottom();
         return el;
@@ -626,22 +834,41 @@ export class AgentChat extends Model {
     private rafId = 0;
 
     private appendToken(token: string) {
-        if (!this.currentAIElement) {
-            this.finishActiveThinking();
-            this.currentAIElement = this.createAIMessagePlaceholder();
-        }
         this.currentContent += token;
         this.fullContent += token;
-        this.scrollToBottom();
+
+        const thinkBody = this.messagesContainer.querySelector(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done) .agent-chat__thinking-body");
+        if (thinkBody) {
+            let chatEl = thinkBody.querySelector(".agent-chat__thinking-chat--streaming") as HTMLElement;
+            if (!chatEl) {
+                chatEl = document.createElement("div");
+                chatEl.className = "agent-chat__thinking-chat agent-chat__thinking-chat--streaming";
+                thinkBody.appendChild(chatEl);
+            }
+            chatEl.innerHTML = this.lute.MarkdownStr("", this.currentContent) || escapeHtml(this.currentContent);
+            postRender(chatEl);
+            if (!this.userScrolledUp) {
+                this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+            }
+            return;
+        }
+
+        if (!this.currentAIElement) {
+            this.currentAIElement = this.createAIMessagePlaceholder();
+        }
 
         if (!this.pendingTokenUpdate) {
             this.pendingTokenUpdate = true;
-            const self = this;
-            this.rafId = requestAnimationFrame(function () {
-                self.pendingTokenUpdate = false;
-                const bubble = self.currentAIElement?.querySelector(".agent-chat__bubble") as HTMLElement;
-                if (bubble) {
-                    bubble.innerHTML = self.lute.MarkdownStr("", self.currentContent) || self.escapeHtml(self.currentContent);
+            this.rafId = requestAnimationFrame(() => {
+                this.pendingTokenUpdate = false;
+                const bodyEl = this.currentAIElement?.querySelector(".agent-chat__body") as HTMLElement;
+                if (bodyEl) {
+                    bodyEl.innerHTML = this.lute.MarkdownStr("", this.currentContent) || escapeHtml(this.currentContent);
+                    postRender(bodyEl);
+                    void bodyEl.offsetHeight; // force reflow
+                    if (!this.userScrolledUp) {
+                        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+                    }
                 }
             });
         }
@@ -651,300 +878,419 @@ export class AgentChat extends Model {
         if (this.pendingTokenUpdate) {
             this.pendingTokenUpdate = false;
             cancelAnimationFrame(this.rafId);
-            const bubble = this.currentAIElement?.querySelector(".agent-chat__bubble") as HTMLElement;
-            if (bubble) {
-                bubble.innerHTML = this.lute.MarkdownStr("", this.currentContent) || this.escapeHtml(this.currentContent);
+            const bodyEl = this.currentAIElement?.querySelector(".agent-chat__body") as HTMLElement;
+            if (bodyEl) {
+                bodyEl.innerHTML = this.lute.MarkdownStr("", this.currentContent) || escapeHtml(this.currentContent);
+                postRender(bodyEl);
             }
         }
-    }
-
-    private appendToolCall(name: string, args: Record<string, unknown>) {
-        // Tool calls are tracked in currentToolCalls, no DOM needed
     }
 
     private appendToolResult(name: string, result: string) {
-        if (name !== "todo_write") { return; }
+        if (name !== "todo_write") {
+            return;
+        }
 
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--tool";
-        el.innerHTML = this.renderTodoList(result);
+        el.innerHTML = renderTodoList(result);
         this.insertBeforeAI(el);
-        this.scrollToBottom();
-    }
-
-    private renderTodoList(result: string): string {
-        const lines = result.split("\n");
-        let html = '<div class="agent-chat__tool-card agent-chat__tool-card--todo">' +
-    '<div class="agent-chat__todo-header">' +
-        '<span class="agent-chat__tool-icon">&#128203;</span>' +
-        '<span class="agent-chat__tool-title">' + (window.siyuan.languages.agentTodoList || "Todo List") + "</span>" +
-    "</div>" +
-    '<div class="agent-chat__todo-items">';
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.startsWith("✅")) {
-                html += '<div class="agent-chat__todo-item agent-chat__todo-item--completed"><span class="agent-chat__todo-status">✅</span>' + this.escapeHtml(line.substring(1).trim()) + "</div>";
-            } else if (line.startsWith("🔄")) {
-                html += '<div class="agent-chat__todo-item agent-chat__todo-item--in-progress"><span class="agent-chat__todo-status">🔄</span>' + this.escapeHtml(line.slice(2).trim()) + "</div>";
-            } else if (line.startsWith("❌")) {
-                html += '<div class="agent-chat__todo-item agent-chat__todo-item--cancelled"><span class="agent-chat__todo-status">❌</span>' + this.escapeHtml(line.substring(1).trim()) + "</div>";
-            } else if (line.startsWith("○")) {
-                html += '<div class="agent-chat__todo-item agent-chat__todo-item--pending"><span class="agent-chat__todo-status">○</span>' + this.escapeHtml(line.substring(1).trim()) + "</div>";
-            }
-        }
-        html += "</div></div>";
-        return html;
+        this.scrollToBottom(true);
+        this.hasInterveningCard = true;
     }
 
     private appendThinking(reasoning: string) {
-        this.finishActiveThinking();
-        this.currentThinkingText = "";
-        this.currentThinkingReasoning = reasoning;
-        this.currentThinkingReasoningContent = "";
         const L = window.siyuan.languages;
-        let text = reasoning;
-        let roundLabel = "";
-        if (reasoning === "analyzing") {
-            text = L.agentThinkingAnalyzing || "Analyzing your request...";
-            roundLabel = "Step 1";
-        } else if (reasoning === "processing") {
-            text = L.agentThinkingProcessing || "Processing results...";
-            roundLabel = "Continuing...";
-        }
-
-        this.currentThinkingText = text;
-
-        let detailLines = "";
-        if (reasoning === "processing" && this.currentToolCalls.length > 0) {
-            detailLines += '<div class="agent-chat__thinking-summary">' + (L.agentToolCall || "Tool call") + "s:</div>";
-            for (let i = 0; i < this.currentToolCalls.length; i++) {
-                const tc = this.currentToolCalls[i];
-                const name = tc.name + (tc.result ? " \u2713" : " \u25CC");
-                detailLines += '<div class="agent-chat__thinking-item">' + this.escapeHtml(name) + "</div>";
-            }
-        }
-
-        const bodyHTML = '<div class="agent-chat__thinking-body fn__none">' +
-            '<div class="agent-chat__thinking-round">' + this.escapeHtml(roundLabel) + "</div>" +
-            detailLines +
-        "</div>";
-
-        const el = document.createElement("div");
-        el.className = "agent-chat__msg agent-chat__msg--thinking";
-        el.innerHTML = '<div class="agent-chat__thinking-card">' +
-    '<div class="agent-chat__thinking-header">' +
-        '<span class="agent-chat__thinking-dot"></span>' +
-        '<span class="agent-chat__thinking-text">' + this.escapeHtml(text) + "</span>" +
-        '<span class="agent-chat__thinking-arrow">' +
-            '<svg class="agent-chat__thinking-arrow--expand"><use xlink:href="#iconExpand"></use></svg>' +
-            '<svg class="agent-chat__thinking-arrow--contract fn__none"><use xlink:href="#iconContract"></use></svg>' +
-        "</span>" +
-    "</div>" +
-    bodyHTML +
-"</div>";
-
-        if (reasoning === "processing" && this.currentAIElement) {
-            if (this.currentContent) {
-                this.finalizeCurrentRound();
-            } else {
-                this.currentAIElement.remove();
-                this.currentAIElement = null;
-            }
-        }
-
-        const header = el.querySelector(".agent-chat__thinking-header") as HTMLElement;
-        const body = el.querySelector(".agent-chat__thinking-body") as HTMLElement;
-        const expandIcon = el.querySelector(".agent-chat__thinking-arrow--expand") as HTMLElement;
-        const contractIcon = el.querySelector(".agent-chat__thinking-arrow--contract") as HTMLElement;
-        header.addEventListener("click", function () {
-            body.classList.toggle("fn__none");
-            const isHidden = body.classList.contains("fn__none");
-            expandIcon.classList.toggle("fn__none", !isHidden);
-            contractIcon.classList.toggle("fn__none", isHidden);
-        });
-        this.insertBeforeAI(el);
-        this.scrollToBottom();
-    }
-
-    private appendReasoning(token: string) {
-        const thinking = this.messagesContainer.querySelector(".agent-chat__msg--thinking:last-child .agent-chat__thinking-body");
-        if (!thinking) { return; }
-        thinking.innerHTML += token;
-    }
-
-    private finalizeCurrentRound() {
-        if (!this.currentAIElement) {
-            return;
-        }
-        const bubble = this.currentAIElement.querySelector(".agent-chat__bubble") as HTMLElement;
-        if (bubble) {
-            bubble.classList.remove("agent-chat__bubble--streaming");
-        }
-        this.currentAIElement = null;
-        this.currentContent = "";
-    }
-
-    private addCopyButton(el: HTMLElement, contentOverride?: string) {
-        const content = contentOverride || this.fullContent || el.querySelector(".agent-chat__bubble")?.textContent || "";
-        const L = window.siyuan.languages;
-        const self = this;
-
-        const actions = document.createElement("div");
-        actions.className = "agent-chat__msg-actions";
-
-        const copyBtn = document.createElement("button");
-        copyBtn.className = "agent-chat__copy-btn b3-button b3-button--text";
-        copyBtn.setAttribute("aria-label", L.copy || "Copy");
-        copyBtn.title = L.copy || "Copy";
-        copyBtn.innerHTML = '<span class="agent-chat__copy-icon">' + String.fromCodePoint(0x1F4CB) + "</span><span>" + (L.copy || "Copy") + "</span>";
-        copyBtn.addEventListener("click", function (e: Event) {
-            e.stopPropagation();
-            navigator.clipboard.writeText(content).catch(function () {});
-        });
-        actions.appendChild(copyBtn);
-
-        const regenBtn = document.createElement("button");
-        regenBtn.className = "agent-chat__copy-btn b3-button b3-button--text";
-        regenBtn.setAttribute("aria-label", L.agentRegenerate || "Regenerate");
-        regenBtn.title = L.agentRegenerate || "Regenerate";
-        regenBtn.innerHTML = '<span class="agent-chat__copy-icon">' + String.fromCodePoint(0x1F504) + "</span><span>" + (L.agentRegenerate || "Regenerate") + "</span>";
-        regenBtn.addEventListener("click", function (e: Event) {
-            e.stopPropagation();
-            self.regenerateResponse();
-        });
-        actions.appendChild(regenBtn);
-
-        el.appendChild(actions);
-    }
-
-    private regenerateResponse() {
-        if (this.isStreaming) {
-            return;
-        }
-        // Remove last assistant message and its DOM
-        for (let i = this.messages.length - 1; i >= 0; i--) {
-            if (this.messages[i].role === "assistant") {
-                this.messages.splice(i, 1);
-                break;
-            }
-        }
-        // Remove all AI/tool/thinking/error DOM after last user message
-        const all = this.messagesContainer.querySelectorAll(".agent-chat__msg");
-        for (let i = all.length - 1; i >= 0; i--) {
-            if (all[i].classList.contains("agent-chat__msg--user")) { break; }
-            all[i].remove();
-        }
-        this.currentAIElement = null;
-        this.currentContent = "";
-        this.fullContent = "";
-        this.currentToolCalls = [];
-
-        // Re-submit
-        this.setStreaming(true);
-        const apiMessages = this.messages.map(function (m) { return {role: m.role, content: m.content}; });
-        const self = this;
-        this.abortController = new AbortController();
-        const requestSessionId = this.sessionId;
-        fetchAgentSSE(
-            apiMessages,
-            window.siyuan.config.appearance.lang,
-            [],
-            function (event: ISSEResult) {
-                if (self.sessionId !== requestSessionId) { return; }
-                self.handleSSEEvent(event);
-            },
-            function (err: Error) {
-                if (self.sessionId !== requestSessionId) { return; }
-                self.handleError(err);
-            },
-            this.abortController.signal,
-            this.sessionId,
-        );
-    }
-
-    private finishResponse() {
-        if (!this.currentAIElement) {
-            return;
-        }
-        this.flushTokenUpdate();
-        if (!this.currentContent) {
-            this.currentAIElement.remove();
-            this.currentAIElement = null;
-            this.currentContent = "";
-            this.fullContent = "";
-            if (this.currentThinkingText) {
-                const tc = this.currentToolCalls.map(function (t) { return {name: t.name, result: t.result}; });
-                this.thinkingSteps.push({
-                    reasoning: this.currentThinkingReasoning,
-                    text: this.currentThinkingText,
-                    toolCalls: tc,
-                    reasoningContent: this.currentThinkingReasoningContent,
-                });
-            }
-            this.currentToolCalls = [];
-            if (this.requestStartTime) {
-                this.sessionTotalDuration += Date.now() - this.requestStartTime;
-                this.requestStartTime = 0;
-            }
-            this.updateTokenDisplay();
-            this.setStreaming(false);
-            if (!this.hasTitled && this.messages.length >= 2) {
-                this.hasTitled = true;
-                this.generateTitle();
-            }
-            this.saveSession();
-            return;
-        }
-        const bubble = this.currentAIElement.querySelector(".agent-chat__bubble") as HTMLElement;
-        if (bubble) {
-            bubble.classList.remove("agent-chat__bubble--streaming");
-        }
-        this.addCopyButton(this.currentAIElement);
-        this.messages.push({role: "assistant", content: this.fullContent || " ", toolCalls: this.currentToolCalls.length > 0 ? this.currentToolCalls.slice() : undefined});
-        this.currentAIElement = null;
-        this.currentContent = "";
-        this.fullContent = "";
         if (this.currentThinkingText) {
-            const tc = this.currentToolCalls.map(function (t) { return {name: t.name, result: t.result}; });
-            this.thinkingSteps.push({
+            let doneText = this.currentThinkingText;
+            this.currentThinkingText = doneText;
+            const tc = this.currentToolCalls.map(function (t) {
+                return {name: t.name, result: t.result};
+            });
+            this.currentThinkingSteps.push({
                 reasoning: this.currentThinkingReasoning,
                 text: this.currentThinkingText,
                 toolCalls: tc,
                 reasoningContent: this.currentThinkingReasoningContent,
             });
         }
-        this.currentToolCalls = [];
-        if (this.requestStartTime) {
-            this.sessionTotalDuration += Date.now() - this.requestStartTime;
-                this.requestStartTime = 0;
-            }
-            this.updateTokenDisplay();
-            this.setStreaming(false);
+        this.currentThinkingText = "";
+        this.currentThinkingReasoning = reasoning;
+        this.currentThinkingReasoningContent = "";
+        let text = L.agentThinking || "Thinking...";
 
-        if (!this.hasTitled && this.messages.length >= 2) {
-            this.hasTitled = true;
-            this.generateTitle();
+        this.currentThinkingText = text;
+
+        let detailLines = "";
+        if (reasoning === "processing" && this.currentToolCalls.length > 0) {
+            const newTools: Array<{ name: string; result?: string }> = [];
+            for (let i = 0; i < this.currentToolCalls.length; i++) {
+                const tc = this.currentToolCalls[i];
+                if (!this.renderedToolNames[tc.name]) {
+                    this.renderedToolNames[tc.name] = true;
+                    newTools.push(tc);
+                }
+            }
+            if (newTools.length > 0) {
+                detailLines += renderToolsLineHTML(newTools);
+            }
         }
-        this.saveSession();
+
+        if (reasoning === "processing" && this.currentAIElement) {
+            if (this.currentContent) {
+                const bodyEl = this.currentAIElement.querySelector(".agent-chat__body") as HTMLElement;
+                if (bodyEl) {
+                    bodyEl.classList.remove("agent-chat__body--streaming");
+                }
+                this.currentThinkingStepContent = this.currentContent;
+                this.currentAIElement.remove();
+            } else {
+                this.currentAIElement.remove();
+            }
+            this.currentAIElement = null;
+            this.currentContent = "";
+        } else if (reasoning === "processing" && this.currentContent) {
+            this.currentThinkingStepContent = this.currentContent;
+            this.currentContent = "";
+            const streamingEl = this.messagesContainer.querySelector(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done) .agent-chat__thinking-chat--streaming") as HTMLElement;
+            if (streamingEl) {
+                streamingEl.classList.remove("agent-chat__thinking-chat--streaming");
+            }
+        }
+
+        if (reasoning === "processing" && this.hasInterveningCard) {
+            const L = window.siyuan.languages;
+            const oldCards = this.messagesContainer.querySelectorAll(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done)");
+            for (let i = 0; i < oldCards.length; i++) {
+                const card = oldCards[i] as HTMLElement;
+                card.classList.add("agent-chat__msg--thinking-done");
+                const dot = card.querySelector(".agent-chat__thinking-dot");
+                if (dot) {
+                    dot.classList.add("fn__none");
+                }
+                const txtEl = card.querySelector(".agent-chat__thinking-text");
+                if (txtEl) {
+                    txtEl.textContent = L.agentThinking || "Thinking...";
+                }
+            }
+            if (this.currentThinkingStepContent && this.currentThinkingSteps.length > 0) {
+                this.currentThinkingSteps[this.currentThinkingSteps.length - 1].content = this.currentThinkingStepContent;
+            }
+            if (this.currentThinkingSteps.length > 0) {
+                this.entries.push({type: "thinking", steps: this.currentThinkingSteps.slice()});
+                this.currentThinkingSteps = [];
+            }
+            this.currentThinkingStepContent = "";
+            // Flush tool calls as assistant entry
+            if (this.currentToolCalls.length > 0) {
+                this.entries.push({type: "assistant", content: "", toolCalls: this.currentToolCalls.slice()});
+                this.currentToolCalls = [];
+            }
+            // Flush pending confirms
+            if (this.pendingConfirms.length > 0) {
+                for (const c of this.pendingConfirms) {
+                    this.entries.push(c);
+                }
+                this.pendingConfirms = [];
+            }
+            this.hasInterveningCard = false;
+        }
+
+        const existingCard = this.messagesContainer.querySelector(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done)") as HTMLElement;
+        const existingBody = existingCard?.querySelector(".agent-chat__thinking-body");
+        if (existingBody) {
+            const textEl = existingCard.querySelector(".agent-chat__thinking-text");
+            if (textEl) {
+                textEl.textContent = text;
+            }
+            if (detailLines) {
+                existingBody.innerHTML += detailLines;
+            }
+            this.scrollToBottom();
+            return;
+        }
+        if (existingCard) {
+            existingCard.remove();
+        }
+
+        const bodyHTML = '<div class="agent-chat__thinking-body">' +
+            detailLines +
+            "</div>";
+
+        const el = document.createElement("div");
+        el.className = "agent-chat__msg agent-chat__msg--thinking";
+        el.innerHTML = '<div class="agent-chat__thinking-card">' +
+            '<div class="agent-chat__thinking-header">' +
+            '<span class="agent-chat__thinking-arrow">' +
+            '<svg class="agent-chat__thinking-arrow--expand fn__none"><use xlink:href="#iconExpand"></use></svg>' +
+            '<svg class="agent-chat__thinking-arrow--contract fn__none"><use xlink:href="#iconContract"></use></svg>' +
+            "</span>" +
+            '<span class="agent-chat__thinking-dot"></span>' +
+            '<span class="agent-chat__thinking-text">' + escapeHtml(text) + "</span>" +
+            "</div>" +
+            bodyHTML +
+            "</div>";
+
+        bindThinkingCardToggle(el);
+        this.insertBeforeAI(el);
+        this.scrollToBottom();
     }
 
-    private generateTitle() {
-        const firstMsg = this.messages[0].content.slice(0, 500);
-        const self = this;
+    private appendReasoning(token: string) {
+        const isNewRound = this.currentThinkingReasoningContent.length === 0;
+        this.currentThinkingReasoningContent += token;
+        const thinkingElems = this.messagesContainer.querySelectorAll(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done) .agent-chat__thinking-body");
+        if (thinkingElems.length === 0) {
+            return;
+        }
+        const thinking = thinkingElems[thinkingElems.length - 1];
+        let reasoningEl: HTMLElement;
+        if (isNewRound) {
+            reasoningEl = document.createElement("div");
+            reasoningEl.className = "agent-chat__thinking-reasoning-text";
+            thinking.appendChild(reasoningEl);
+        } else {
+            const allReasoning = thinking.querySelectorAll(".agent-chat__thinking-reasoning-text");
+            reasoningEl = allReasoning[allReasoning.length - 1] as HTMLElement;
+            if (!reasoningEl) {
+                reasoningEl = document.createElement("div");
+                reasoningEl.className = "agent-chat__thinking-reasoning-text";
+                thinking.appendChild(reasoningEl);
+            }
+        }
+        reasoningEl.textContent += token;
+    }
+
+    private addCopyButton(el: HTMLElement, contentOverride?: string, promptTokens?: number, completionTokens?: number, durationMs?: number, timestamp?: number) {
+        const content = contentOverride || this.fullContent || el.querySelector(".agent-chat__body")?.textContent || "";
+        const L = window.siyuan.languages;
+
+        const actions = document.createElement("div");
+        actions.className = "agent-chat__msg-actions";
+
+        if (timestamp) {
+            const timeSpan = document.createElement("span");
+            timeSpan.className = "agent-chat__msg-meta agent-chat__msg-time--ai";
+            timeSpan.textContent = this.formatMessageTime(timestamp);
+            actions.appendChild(timeSpan);
+        }
+
+        if (promptTokens !== undefined && completionTokens !== undefined && (promptTokens + completionTokens > 0 || (durationMs && durationMs > 0))) {
+            const total = promptTokens + completionTokens;
+            let text = "";
+            if (total > 0) {
+                text = total >= 1000 ? (total / 1000).toFixed(1) + "k" : total.toString();
+            }
+            if (durationMs) {
+                let seconds = Math.floor(durationMs / 1000);
+                const minutes = Math.floor(seconds / 60);
+                seconds = seconds % 60;
+                if (text) { text += " \u00B7 "; }
+                text += (minutes > 0 ? minutes + "m" : "") + seconds + "s";
+            }
+            const stats = document.createElement("span");
+            stats.className = "agent-chat__msg-meta agent-chat__msg-stats";
+            stats.textContent = text;
+            actions.appendChild(stats);
+        }
+
+        const copyBtn = document.createElement("span");
+        copyBtn.className = "block__icon block__icon--show ariaLabel";
+        copyBtn.setAttribute("data-position", "north");
+        copyBtn.setAttribute("aria-label", L.copy);
+        copyBtn.innerHTML = '<svg><use xlink:href="#iconCopy"></use></svg>';
+        copyBtn.addEventListener("click", (e: Event) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(content).catch(() => {
+            });
+        });
+        actions.appendChild(copyBtn);
+
+        const regenBtn = document.createElement("span");
+        regenBtn.className = "block__icon block__icon--show ariaLabel";
+        regenBtn.setAttribute("data-position", "north");
+        regenBtn.setAttribute("aria-label", L.agentRegenerate);
+        regenBtn.innerHTML = '<svg><use xlink:href="#iconRefresh"></use></svg>';
+        regenBtn.addEventListener("click", (e: Event) => {
+            e.stopPropagation();
+            this.regenerateResponse();
+        });
+        actions.appendChild(regenBtn);
+
+        el.appendChild(actions);
+    }
+
+    private async regenerateResponse() {
+        if (this.isStreaming) {
+            return;
+        }
+        // Pop all entries after the last user entry
+        while (this.entries.length > 0 && this.entries[this.entries.length - 1].type !== "user") {
+            this.entries.pop();
+        }
+        // Remove all AI/tool/thinking/error DOM after last user message
+        const all = this.messagesContainer.querySelectorAll(".agent-chat__msg");
+        for (let i = all.length - 1; i >= 0; i--) {
+            if (all[i].classList.contains("agent-chat__msg--user")) {
+                break;
+            }
+            all[i].remove();
+        }
+        this.currentAIElement = null;
+        this.currentContent = "";
+        this.fullContent = "";
+        this.currentToolCalls = [];
+        this.renderedToolNames = {};
+        this.hasInterveningCard = false;
+        this.currentThinkingSteps = [];
+        this.currentThinkingStepContent = "";
+        this.currentThinkingText = "";
+        this.currentThinkingReasoning = "";
+        this.currentThinkingReasoningContent = "";
+
+        // Re-submit
+        this.setStreaming(true);
+        const apiMessages = this.entries.filter((e) => e.type === "user" || e.type === "assistant").map((e) => ({
+            role: e.type === "user" ? "user" as const : "assistant" as const,
+            content: (e as { content: string }).content
+        }));
+        this.abortController = new AbortController();
+        const requestSessionId = this.sessionId;
+        await fetchAgentSSE(
+            apiMessages,
+            window.siyuan.config.appearance.lang,
+            [],
+            (event: ISSEResult) => {
+                if (this.sessionId !== requestSessionId) {
+                    return;
+                }
+                return this.handleSSEEvent(event);
+            },
+            (err: Error) => {
+                if (this.sessionId !== requestSessionId) {
+                    return;
+                }
+                return this.handleError(err);
+            },
+            this.abortController.signal,
+            this.sessionId,
+            this.getSelectedModel(),
+        );
+    }
+
+    private async finishResponse() {
+        this.finishActiveThinking();
+        const savedContent = this.currentContent;
+        const savedFullContent = this.fullContent;
+        const ts = Date.now();
+        const dur = this.requestStartTime ? Date.now() - this.requestStartTime : 0;
+        const rPromptTokens = this.responsePromptTokens;
+        const rCompletionTokens = this.responseCompletionTokens;
+        if (!this.currentAIElement && savedContent) {
+            const thinkBody = this.messagesContainer.querySelector(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done) .agent-chat__thinking-body");
+            if (thinkBody) {
+                const streamingEl = thinkBody.querySelector(".agent-chat__thinking-chat--streaming") as HTMLElement;
+                if (streamingEl) {
+                    streamingEl.remove();
+                }
+            }
+            const el = document.createElement("div");
+            el.className = "agent-chat__msg agent-chat__msg--ai";
+            el.innerHTML = '<div class="agent-chat__body">' + (this.lute.MarkdownStr("", savedContent) || escapeHtml(savedContent)) + "</div>";
+            this.messagesContainer.appendChild(el);
+            postRender(el);
+            this.currentAIElement = el;
+            this.currentContent = savedContent;
+            this.fullContent = savedFullContent;
+            this.addCopyButton(el, undefined, rPromptTokens, rCompletionTokens, dur, ts);
+            this.scrollToBottom(true);
+        }
+        this.flushThinkingStep();
+        if (this.pendingConfirms.length > 0) {
+            for (const c of this.pendingConfirms) {
+                this.entries.push(c);
+            }
+            this.pendingConfirms = [];
+        }
+        if (this.currentContent) {
+            this.entries.push({
+                type: "assistant",
+                content: this.currentContent,
+                toolCalls: this.currentToolCalls.length > 0 ? this.currentToolCalls.slice() : undefined,
+                promptTokens: rPromptTokens || undefined,
+                completionTokens: rCompletionTokens || undefined,
+                duration: dur || undefined,
+                timestamp: ts,
+            });
+        } else if (this.currentToolCalls.length > 0) {
+            this.entries.push({type: "assistant", content: "", toolCalls: this.currentToolCalls.slice()});
+        }
+        this.currentAIElement = null;
+        this.currentContent = "";
+        this.fullContent = "";
+        this.currentToolCalls = [];
+        this.renderedToolNames = {};
+        if (this.requestStartTime) {
+            this.sessionTotalDuration += Date.now() - this.requestStartTime;
+            this.requestStartTime = 0;
+        }
+        this.responsePromptTokens = 0;
+        this.responseCompletionTokens = 0;
+        this.updateTokenDisplay();
+        this.setStreaming(false);
+        await this.saveSession();
+        if (savedContent && (!document.hasFocus() || document.hidden)) {
+            const L = window.siyuan.languages;
+            sendNotification({title: L.agentNotifyDone, timeoutType: "default"});
+        }
+    }
+
+    private flushThinkingStep() {
+        if (this.currentThinkingText) {
+            const tc = this.currentToolCalls.map(function (t) {
+                return {name: t.name, result: t.result};
+            });
+            this.currentThinkingSteps.push({
+                reasoning: this.currentThinkingReasoning,
+                text: this.currentThinkingText,
+                toolCalls: tc,
+                reasoningContent: this.currentThinkingReasoningContent,
+                content: this.currentThinkingStepContent,
+            });
+            this.currentThinkingText = "";
+            this.currentThinkingStepContent = "";
+        }
+        if (this.currentThinkingSteps.length > 0) {
+            this.entries.push({
+                type: "thinking",
+                steps: this.currentThinkingSteps.slice(),
+            });
+            this.currentThinkingSteps = [];
+        }
+    }
+
+    private tryGenerateTitle() {
+        if (this.hasTitled) { return; }
+        this.hasTitled = true;
+        const userEntry = this.entries.find((e): e is { type: "user"; content: string } => e.type === "user");
+        const userMsg = userEntry?.content?.slice(0, 500) || "";
         fetch("/api/ai/agent/title", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({message: firstMsg}),
-        }).then(function (resp) { return resp.json(); }).then(function (data) {
-            if (data.code === 0 && data.data && data.data !== self.sessionTitle) {
-                self.sessionTitle = data.data;
-                self.titleElement.textContent = data.data;
-                self.saveSession();
+            body: JSON.stringify({message: userMsg, model: this.getSelectedModel()}),
+        }).then((resp) => resp.json()).then((data) => {
+            if (data.code === 0 && data.data && data.data !== this.sessionTitle) {
+                this.sessionTitle = data.data;
+                this.titleElement.textContent = data.data;
+                this.saveSession();
             }
+        }).catch((e) => {
+            console.error("agent title request error:", e);
         });
     }
 
-    private appendError(message: string) {
+    private async appendError(message: string) {
+        this.finishActiveThinking();
         this.clearThinking();
         if (this.currentAIElement && !this.currentContent) {
             this.currentAIElement.remove();
@@ -952,53 +1298,106 @@ export class AgentChat extends Model {
         this.currentAIElement = null;
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--error";
-        el.innerHTML = '<div class="agent-chat__bubble agent-chat__bubble--error">' + this.escapeHtml(message) + "</div>";
+        el.innerHTML = '<div class="agent-chat__body agent-chat__body--error"><svg class="agent-chat__error-icon"><use xlink:href="#iconTriangleAlert"></use></svg><span>' + escapeHtml(message) + "</span></div>";
         this.messagesContainer.appendChild(el);
-        this.scrollToBottom();
-        this.saveSession();
+        this.scrollToBottom(true);
+        this.flushThinkingStep();
+        await this.saveSession();
     }
 
     private appendRetry(attempt: number, maxRetries: number) {
+        this.finishActiveThinking();
+        this.currentThinkingSteps = [];
+        this.currentThinkingStepContent = "";
         this.clearThinking();
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--thinking";
-        el.innerHTML = '<div class="agent-chat__thinking-card">' +
-    '<div class="agent-chat__thinking-header">' +
-        '<span class="agent-chat__thinking-dot"></span>' +
-        '<span class="agent-chat__thinking-text">' + this.escapeHtml("Retrying (" + attempt + "/" + maxRetries + ")...") + "</span>" +
-    "</div>" +
-"</div>";
+        el.innerHTML = renderRetryCardHTML(attempt, maxRetries);
         this.insertBeforeAI(el);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
+        this.hasInterveningCard = true;
     }
 
-    private stopGeneration() {
+    private appendSnapshotInfo(snapshotID: string) {
+        const L = window.siyuan.languages;
+        const shortID = snapshotID.length > 7 ? snapshotID.substring(0, 7) : snapshotID;
+        const el = document.createElement("div");
+        el.className = "agent-chat__msg agent-chat__msg--snapshot";
+        el.innerHTML = '<div class="agent-chat__snapshot-body">' +
+            '<svg class="agent-chat__snapshot-icon"><use xlink:href="#iconHistory"></use></svg>' +
+            '<span class="agent-chat__snapshot-text">' + escapeHtml((L.snapshotAutoCreated || "Auto snapshot created") + " " + shortID) + "</span>" +
+            '<button class="b3-button b3-button--text agent-chat__snapshot-rollback b3-tooltips b3-tooltips__n" aria-label="' + (L.rollback || "Rollback") + '"><svg><use xlink:href="#iconUndo"></use></svg></button>' +
+            "</div>";
+        const rollbackBtn = el.querySelector(".agent-chat__snapshot-rollback") as HTMLButtonElement;
+        rollbackBtn.addEventListener("click", () => {
+            const confirmText = (L.rollbackConfirm || "Rollback cannot be undone").replace("${name}", L.dataSnapshot || "Snapshot").replace("${time}", shortID);
+            confirmDialog("⚠️ " + (L.rollback || "Rollback"), confirmText, () => {
+                fetchPost("/api/repo/checkoutRepo", {id: snapshotID}, () => {});
+            });
+        });
+        this.insertBeforeAI(el);
+        this.scrollToBottom(true);
+        this.hasInterveningCard = true;
+    }
+
+    private async stopGeneration() {
         if (this.abortController) {
             this.abortController.abort();
             this.abortController = null;
         }
         this.flushTokenUpdate();
-        if (this.currentAIElement) {
-            const bubble = this.currentAIElement.querySelector(".agent-chat__bubble") as HTMLElement;
-            if (bubble) {
-                bubble.classList.remove("agent-chat__bubble--streaming");
+        this.finishActiveThinking();
+        const savedContent = this.currentContent;
+        const savedFullContent = this.fullContent;
+        const ts = Date.now();
+        const dur = this.requestStartTime ? Date.now() - this.requestStartTime : 0;
+        const rPromptTokens = this.responsePromptTokens;
+        const rCompletionTokens = this.responseCompletionTokens;
+        if (!this.currentAIElement && savedContent) {
+            const thinkBody = this.messagesContainer.querySelector(".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done) .agent-chat__thinking-body");
+            if (thinkBody) {
+                const streamingEl = thinkBody.querySelector(".agent-chat__thinking-chat--streaming") as HTMLElement;
+                if (streamingEl) {
+                    streamingEl.remove();
+                }
             }
-            if (this.fullContent) {
-                this.messages.push({role: "assistant", content: this.fullContent || " ", toolCalls: this.currentToolCalls.length > 0 ? this.currentToolCalls.slice() : undefined});
-            } else {
-                this.currentAIElement.remove();
-            }
+            const el = document.createElement("div");
+            el.className = "agent-chat__msg agent-chat__msg--ai";
+            el.innerHTML = '<div class="agent-chat__body">' + (this.lute.MarkdownStr("", savedContent) || escapeHtml(savedContent)) + "</div>";
+            this.messagesContainer.appendChild(el);
+            postRender(el);
+            this.currentAIElement = el;
+            this.currentContent = savedContent;
+            this.fullContent = savedFullContent;
+            this.addCopyButton(el, undefined, rPromptTokens, rCompletionTokens, dur, ts);
+            this.scrollToBottom(true);
+        }
+        this.flushThinkingStep();
+        if (this.currentContent) {
+            this.entries.push({
+                type: "assistant",
+                content: this.currentContent,
+                toolCalls: this.currentToolCalls.length > 0 ? this.currentToolCalls.slice() : undefined,
+                promptTokens: rPromptTokens || undefined,
+                completionTokens: rCompletionTokens || undefined,
+                duration: dur || undefined,
+                timestamp: ts,
+            });
+        }
         this.currentAIElement = null;
         this.currentContent = "";
         this.fullContent = "";
         this.currentToolCalls = [];
-        }
+        this.renderedToolNames = {};
         if (this.requestStartTime) {
             this.sessionTotalDuration += Date.now() - this.requestStartTime;
-                this.requestStartTime = 0;
-            }
-            this.updateTokenDisplay();
-            this.setStreaming(false);
+            this.requestStartTime = 0;
+        }
+        this.responsePromptTokens = 0;
+        this.responseCompletionTokens = 0;
+        this.updateTokenDisplay();
+        this.setStreaming(false);
+        await this.saveSession();
     }
 
     private insertBeforeAI(el: HTMLElement) {
@@ -1009,49 +1408,66 @@ export class AgentChat extends Model {
         }
     }
 
-    private appendConfirm(name: string, args: Record<string, unknown>, confirmID: string) {
-        const self = this;
+    private async appendConfirm(name: string, args: Record<string, unknown>, confirmID: string) {
         const L = window.siyuan.languages;
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--confirm";
         const argsStr = JSON.stringify(args, null, 2);
-        const action = (args.action as string) || name;
-        const desc = (L.agentConfirmDesc || "Confirm {action} on: {name}?").replace("{action}", this.escapeHtml(action)).replace("{name}", this.escapeHtml(name));
+        const action = this.toolActionLabel((args.action as string) || name);
+        const objName = this.objectLabel(args);
+        const desc = (L.agentConfirmDesc || "Agent will {action}: {name}").replace("{action}", escapeHtml(action)).replace("{name}", escapeHtml(objName));
         el.innerHTML = '<div class="agent-chat__confirm-card">' +
-    '<div class="agent-chat__confirm-header">&#9888; ' + desc + "</div>" +
-    '<pre class="agent-chat__confirm-args">' + this.escapeHtml(argsStr) + "</pre>" +
-    '<div class="agent-chat__confirm-actions">' +
-        '<button class="b3-button b3-button--cancel agent-chat__confirm-reject">' + (L.agentConfirmReject || "Reject") + "</button>" +
-        '<button class="b3-button b3-button--text agent-chat__confirm-approve">' + (L.agentConfirmApprove || "Approve") + "</button>" +
-        '<button class="b3-button b3-button--text agent-chat__confirm-always ariaLabel" data-position="n" aria-label="' + (L.agentConfirmAlwaysDesc || "Session Allow") + '">' + (L.agentConfirmAlways || "Session Allow") + "</button>" +
-    "</div>" +
-"</div>";
+            '<div class="agent-chat__confirm-header"><svg class="agent-chat__confirm-icon"><use xlink:href="#iconInfo"></use></svg> ' + desc + "</div>" +
+            '<pre class="agent-chat__confirm-args">' + escapeHtml(argsStr) + "</pre>" +
+            '<div class="agent-chat__confirm-actions">' +
+            '<button class="b3-button b3-button--cancel agent-chat__confirm-reject">' + (L.agentConfirmReject || "Reject") + "</button>" +
+            '<button class="b3-button b3-button--text agent-chat__confirm-approve">' + (L.agentConfirmApprove || "Approve") + "</button>" +
+            '<button class="b3-button b3-button--text agent-chat__confirm-always ariaLabel" data-position="n" aria-label="' + (L.agentConfirmAlwaysDesc || "Session Allow") + '">' + (L.agentConfirmAlways || "Session Allow") + "</button>" +
+            "</div>" +
+            "</div>";
         const approveBtn = el.querySelector(".agent-chat__confirm-approve");
-        if (approveBtn) { approveBtn.addEventListener("click", function (e) {
-            e.stopPropagation();
-            el.classList.add("agent-chat__msg--confirmed");
-            const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
-            if (btns) { btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmApprove || "Approved") + "</span>"; }
-            self.postConfirm(confirmID, true);
-        }); }
+        if (approveBtn) {
+            approveBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                el.classList.add("agent-chat__msg--confirmed");
+                const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
+                if (btns) {
+                    btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmApprove || "Approved") + "</span>";
+                }
+                this.postConfirm(confirmID, true);
+            });
+        }
         const rejectBtn = el.querySelector(".agent-chat__confirm-reject");
-        if (rejectBtn) { rejectBtn.addEventListener("click", function (e) {
-            e.stopPropagation();
-            el.classList.add("agent-chat__msg--confirmed");
-            const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
-            if (btns) { btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmReject || "Rejected") + "</span>"; }
-            self.postConfirm(confirmID, false);
-        }); }
+        if (rejectBtn) {
+            rejectBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                el.classList.add("agent-chat__msg--confirmed");
+                const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
+                if (btns) {
+                    btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmReject || "Rejected") + "</span>";
+                }
+                this.postConfirm(confirmID, false);
+            });
+        }
         const alwaysBtn = el.querySelector(".agent-chat__confirm-always");
-        if (alwaysBtn) { alwaysBtn.addEventListener("click", function (e) {
-            e.stopPropagation();
-            el.classList.add("agent-chat__msg--confirmed");
-            const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
-            if (btns) { btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmAlways || "Session Allow") + "</span>"; }
-            self.postConfirm(confirmID, true, true);
-        }); }
+        if (alwaysBtn) {
+            alwaysBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                el.classList.add("agent-chat__msg--confirmed");
+                const btns = el.querySelector(".agent-chat__confirm-actions") as HTMLElement;
+                if (btns) {
+                    btns.innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentConfirmAlways || "Session Allow") + "</span>";
+                }
+                this.postConfirm(confirmID, true, true);
+            });
+        }
         this.insertBeforeAI(el);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
+        this.hasInterveningCard = true;
+        this.pendingConfirms.push({type: "confirm", name, args, confirmID, status: "pending"});
+        if (!document.hasFocus() || document.hidden) {
+            sendNotification({title: L.agentNotifyConfirm, body: "", timeoutType: "default"});
+        }
     }
 
     private async postConfirm(confirmID: string, approved: boolean, always?: boolean) {
@@ -1071,64 +1487,31 @@ export class AgentChat extends Model {
         } catch (e) {
             console.error("agent confirm request error:", e);
         }
+        const entry = this.entries.find(e => e.type === "confirm" && e.confirmID === confirmID) as {
+            status?: string
+        } | undefined;
+        if (entry) {
+            entry.status = always ? "always" : (approved ? "approved" : "rejected");
+        }
+        await this.saveSession();
     }
 
     private appendQuestion(questionID: string, args: Record<string, unknown>) {
-        const self = this;
         const L = window.siyuan.languages;
         const rawQuestions = args.questions as Array<Record<string, unknown>>;
-        if (!rawQuestions || rawQuestions.length === 0) { return; }
+        if (!rawQuestions || rawQuestions.length === 0) {
+            return;
+        }
 
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--question";
         el.setAttribute("data-question-id", questionID);
 
-        let html = '<div class="agent-chat__question-card">';
-        for (let qi = 0; qi < rawQuestions.length; qi++) {
-            const q = rawQuestions[qi];
-            const header = (q.header as string) || "";
-            const question = (q.question as string) || "";
-            const options = q.options as Array<Record<string, unknown>> || [];
-            const multiple = q.multiple as boolean || false;
-            const custom = q.custom as boolean !== false;
-
-            html += '<div class="agent-chat__question-item">';
-            if (header) {
-                html += '<div class="agent-chat__question-header">' + self.escapeHtml(header) + "</div>";
-            }
-            if (question) {
-                html += '<div class="agent-chat__question-text">' + self.escapeHtml(question) + "</div>";
-            }
-            html += '<div class="agent-chat__question-options" data-qi="' + qi + '">';
-            const inputType = multiple ? "checkbox" : "radio";
-            const inputName = "q_" + questionID + "_" + qi;
-            for (let oi = 0; oi < options.length; oi++) {
-                const opt = options[oi];
-                const label = (opt.label as string) || "";
-                const desc = (opt.description as string) || "";
-                html += '<label class="agent-chat__question-option">' +
-                    '<input type="' + inputType + '" name="' + inputName + '" value="' + self.escapeHtml(label) + '">' +
-                    '<span class="agent-chat__question-option-label">' + self.escapeHtml(label) + "</span>";
-                if (desc) {
-                    html += '<span class="agent-chat__question-option-desc">' + self.escapeHtml(desc) + "</span>";
-                }
-                html += "</label>";
-            }
-            if (custom) {
-                html += '<input class="agent-chat__question-custom" placeholder="' + (L.agentQuestionCustom || "Type your own answer...") + '" data-qi="' + qi + '">';
-            }
-            html += "</div></div>";
-        }
-        html += '<div class="agent-chat__question-submit">' +
-            '<button class="b3-button b3-button--text agent-chat__question-submit-btn">' +
-            (L.agentQuestionSubmit || "Submit") + "</button>" +
-        "</div></div>";
-
-        el.innerHTML = html;
+        el.innerHTML = renderQuestionCardHTML(rawQuestions, questionID);
 
         const submitBtn = el.querySelector(".agent-chat__question-submit-btn");
         if (submitBtn) {
-            submitBtn.addEventListener("click", function () {
+            submitBtn.addEventListener("click", () => {
                 const answers: string[] = [];
                 for (let qi = 0; qi < rawQuestions.length; qi++) {
                     const optEl = el.querySelector('.agent-chat__question-options[data-qi="' + qi + '"]');
@@ -1148,12 +1531,13 @@ export class AgentChat extends Model {
                 if (actions) {
                     (actions as HTMLElement).innerHTML = '<span class="agent-chat__confirm-done">' + (L.agentQuestionSubmitted || "Submitted") + "</span>";
                 }
-                self.postQuestionAnswer(questionID, answers);
+                this.postQuestionAnswer(questionID, answers);
             });
         }
 
         this.insertBeforeAI(el);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
+        this.hasInterveningCard = true;
     }
 
     private async postQuestionAnswer(questionID: string, answers: string[]) {
@@ -1171,47 +1555,70 @@ export class AgentChat extends Model {
         }
     }
 
-    private renderSingleThinkingCard(step: {reasoning: string; text: string; toolCalls: Array<{name: string; result?: string}>; reasoningContent: string}) {
+    private renderSingleThinkingCard(step: {
+        reasoning: string;
+        text: string;
+        toolCalls: Array<{ name: string; result?: string }>;
+        reasoningContent: string
+    }) {
+        const el = createThinkingCardElement(step);
+        bindThinkingCardToggle(el);
+        this.messagesContainer.appendChild(el);
+    }
+
+    private renderMergedThinkingCard(steps: Array<{
+        reasoning: string;
+        text: string;
+        toolCalls: Array<{ name: string; result?: string }>;
+        reasoningContent: string;
+        content?: string
+    }>) {
+        if (!steps || steps.length === 0) { return; }
         let detail = "";
-        if (step.toolCalls.length > 0) {
-            detail += '<div class="agent-chat__thinking-summary">Tool calls:</div>';
-            for (let j = 0; j < step.toolCalls.length; j++) {
-                const tc = step.toolCalls[j];
-                detail += '<div class="agent-chat__thinking-item">' + this.escapeHtml(tc.name + (tc.result ? " \u2713" : " \u25CC")) + "</div>";
+        const seenTools: Record<string, boolean> = {};
+        for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            if (step.content) {
+                detail += '<div class="agent-chat__thinking-chat">' + (this.lute.MarkdownStr("", step.content) || escapeHtml(step.content)) + "</div>";
+            }
+            if (step.toolCalls.length > 0) {
+                const newTools = step.toolCalls.filter(tc => !seenTools[tc.name]);
+                if (newTools.length > 0) {
+                    detail += "<div class=\"agent-chat__thinking-tools-line\"><span class=\"agent-chat__thinking-summary\">Tool calls:</span>";
+                    for (let j = 0; j < newTools.length; j++) {
+                        const tc = newTools[j];
+                        seenTools[tc.name] = true;
+                        detail += '<span class="agent-chat__thinking-tool">' + escapeHtml(tc.name) + "</span>";
+                    }
+                    detail += "</div>";
+                }
+            }
+            if (step.reasoningContent) {
+                detail += '<div class="agent-chat__thinking-reasoning-text">' + escapeHtml(step.reasoningContent) + "</div>";
             }
         }
-        if (step.reasoningContent) {
-            detail += '<div class="agent-chat__thinking-round">Reasoning:</div>';
-            detail += '<div>' + this.escapeHtml(step.reasoningContent) + "</div>";
-        }
+
+        const headerText = steps[steps.length - 1].text;
 
         const el = document.createElement("div");
         el.className = "agent-chat__msg agent-chat__msg--thinking agent-chat__msg--thinking-done";
         el.innerHTML = '<div class="agent-chat__thinking-card">' +
-    '<div class="agent-chat__thinking-header">' +
-        '<span class="agent-chat__thinking-dot fn__none"></span>' +
-        '<span class="agent-chat__thinking-text">' + this.escapeHtml(step.text) + "</span>" +
-        '<span class="agent-chat__thinking-arrow">' +
+            '<div class="agent-chat__thinking-header">' +
+            '<span class="agent-chat__thinking-arrow">' +
             '<svg class="agent-chat__thinking-arrow--expand"><use xlink:href="#iconExpand"></use></svg>' +
             '<svg class="agent-chat__thinking-arrow--contract fn__none"><use xlink:href="#iconContract"></use></svg>' +
-        "</span>" +
-    "</div>" +
-    '<div class="agent-chat__thinking-body fn__none">' +
-        detail +
-    "</div>" +
-"</div>";
+            "</span>" +
+            '<span class="agent-chat__thinking-dot fn__none"></span>' +
+            '<span class="agent-chat__thinking-text">' + escapeHtml(headerText) + "</span>" +
+            "</div>" +
+            '<div class="agent-chat__thinking-body">' +
+            detail +
+            "</div>" +
+            "</div>";
 
-        const header = el.querySelector(".agent-chat__thinking-header") as HTMLElement;
-        const body = el.querySelector(".agent-chat__thinking-body") as HTMLElement;
-        const expandIcon = el.querySelector(".agent-chat__thinking-arrow--expand") as HTMLElement;
-        const contractIcon = el.querySelector(".agent-chat__thinking-arrow--contract") as HTMLElement;
-        header.addEventListener("click", function () {
-            body.classList.toggle("fn__none");
-            const isHidden = body.classList.contains("fn__none");
-            expandIcon.classList.toggle("fn__none", !isHidden);
-            contractIcon.classList.toggle("fn__none", isHidden);
-        });
+        bindThinkingCardToggle(el);
         this.messagesContainer.appendChild(el);
+        postRender(el);
     }
 
     private updateTokenDisplay() {
@@ -1234,30 +1641,51 @@ export class AgentChat extends Model {
     }
 
     private appendUsage(promptTokens: number, completionTokens: number) {
+        this.responsePromptTokens += promptTokens;
+        this.responseCompletionTokens += completionTokens;
         this.sessionPromptTokens += promptTokens;
         this.sessionCompletionTokens += completionTokens;
         this.updateTokenDisplay();
     }
 
     private clearThinking() {
-        const items = this.messagesContainer.querySelectorAll(".agent-chat__msg--thinking");
+        const items = this.messagesContainer.querySelectorAll(
+            ".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done)"
+        );
         for (let i = 0; i < items.length; i++) {
             items[i].remove();
         }
     }
 
     private finishActiveThinking() {
-        const items = this.messagesContainer.querySelectorAll(".agent-chat__msg--thinking");
+        const L = window.siyuan.languages;
+        const dur = this.requestStartTime ? ((Date.now() - this.requestStartTime) / 1000).toFixed(1) + "s" : "";
+        let doneText = L.agentThinkingDoneTime ? L.agentThinkingDoneTime.replace("%s", dur) : (L.agentThinking || "Thinking...");
+        this.currentThinkingText = doneText || this.currentThinkingText;
+
+        const items = this.messagesContainer.querySelectorAll(
+            ".agent-chat__msg--thinking:not(.agent-chat__msg--thinking-done)"
+        );
         for (let i = 0; i < items.length; i++) {
             const el = items[i] as HTMLElement;
+            if (i === items.length - 1) {
+                const streamingChat = el.querySelector(".agent-chat__thinking-chat--streaming");
+                if (streamingChat) { streamingChat.remove(); }
+            }
             el.classList.add("agent-chat__msg--thinking-done");
             const dot = el.querySelector(".agent-chat__thinking-dot");
-            if (dot) { dot.classList.add("fn__none"); }
-            const textEl = el.querySelector(".agent-chat__thinking-text");
-            if (textEl) {
-                const raw = textEl.textContent || "";
-                if (raw.indexOf("分析") >= 0) { textEl.textContent = raw.replace("正在分析", "已分析"); }
-                else if (raw.indexOf("处理") >= 0) { textEl.textContent = raw.replace("正在处理", "已处理"); }
+            if (dot) {
+                dot.classList.add("fn__none");
+            }
+            const expandIcon = el.querySelector(".agent-chat__thinking-arrow--expand");
+            if (expandIcon) {
+                expandIcon.classList.remove("fn__none");
+            }
+            if (doneText) {
+                const textEl = el.querySelector(".agent-chat__thinking-text");
+                if (textEl) {
+                    textEl.textContent = doneText;
+                }
             }
         }
     }
@@ -1271,16 +1699,36 @@ export class AgentChat extends Model {
         }
     }
 
-    private scrollToBottom() {
-        const self = this;
-        requestAnimationFrame(function () {
-            self.messagesContainer.scrollTop = self.messagesContainer.scrollHeight;
+    private scrollToBottom(force = false) {
+        if (!force && this.userScrolledUp) { return; }
+        requestAnimationFrame(() => {
+            this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
         });
     }
 
-    private escapeHtml(text: string): string {
-        const div = document.createElement("div");
-        div.textContent = text;
-        return div.innerHTML;
+    private objectLabel(args: Record<string, unknown>): string {
+        return (args.name || args.title || args.path || args.id || "") as string;
     }
+
+    private toolActionLabel(action: string): string {
+        const L = window.siyuan.languages;
+        const labels: Record<string, string> = {
+            "append": L.agentActionAppend || "add content",
+            "update": L.agentActionUpdate || "modify",
+            "delete": L.agentActionDelete || "delete",
+            "create": L.agentActionCreate || "create",
+            "move": L.agentActionMove || "move",
+            "rename": L.agentActionRename || "rename",
+        };
+        return labels[action] || action;
+    }
+
+    private formatMessageTime(ts: number): string {
+        const d = dayjs(ts);
+        if (d.format("YYYY-MM-DD") === dayjs().format("YYYY-MM-DD")) {
+            return d.format("HH:mm");
+        }
+        return d.format("YYYY-MM-DD HH:mm");
+    }
+
 }

@@ -368,6 +368,7 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/export/exportEPUB", model.CheckAuth, model.CheckAdminRole, exportEPUB)
 	ginServer.Handle("POST", "/api/export/exportAttributeView", model.CheckAuth, model.CheckAdminRole, exportAttributeView)
 	ginServer.Handle("POST", "/api/export/exportCodeBlock", model.CheckAuth, model.CheckAdminRole, exportCodeBlock)
+	ginServer.Handle("POST", "/api/export/copyExportFile", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, copyExportFile)
 
 	ginServer.Handle("POST", "/api/import/importStdMd", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, importStdMd)
 	ginServer.Handle("POST", "/api/import/importZipMd", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, importZipMd)
@@ -528,6 +529,11 @@ func ServeAPI(ginServer *gin.Engine) {
 	ginServer.Handle("POST", "/api/ai/agent/confirm", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, agentChatConfirm)
 	ginServer.Handle("POST", "/api/ai/agent/question", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, agentChatQuestion)
 	ginServer.Handle("POST", "/api/ai/agent/title", model.CheckAuth, model.CheckAdminRole, agentChatTitle)
+	ginServer.Handle("POST", "/api/ai/agent/lsSessions", model.CheckAuth, model.CheckAdminRole, lsSessions)
+	ginServer.Handle("POST", "/api/ai/agent/getSession", model.CheckAuth, model.CheckAdminRole, getSession)
+	ginServer.Handle("POST", "/api/ai/agent/saveSession", model.CheckAuth, model.CheckAdminRole, saveSession)
+	ginServer.Handle("POST", "/api/ai/agent/removeSession", model.CheckAuth, model.CheckAdminRole, removeSession)
+	ginServer.Handle("POST", "/api/ai/agent/lsSkills", model.CheckAuth, model.CheckAdminRole, lsSkills)
 
 	ginServer.Handle("POST", "/api/petal/loadPetals", model.CheckAuth, loadPetals)
 	ginServer.Handle("POST", "/api/petal/setPetalEnabled", model.CheckAuth, model.CheckAdminRole, model.CheckReadonly, setPetalEnabled)

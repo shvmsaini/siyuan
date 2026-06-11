@@ -328,6 +328,11 @@ const showErrorWindow = (titleZh, titleEn, content, emoji = "⚠️") => {
 };
 
 const initMainWindow = () => {
+    if (!app.isReady()) {
+        writeLog("initMainWindow: app not ready, skipping");
+        return;
+    }
+
     // 恢复主窗体状态
     let oldWindowState = {};
     try {
@@ -968,13 +973,19 @@ app.whenReady().then(() => {
             case "showItemInFolder":
                 shell.showItemInFolder(data.filePath);
                 break;
-            case "notification":
-                new Notification({
+            case "notification": {
+                const n = new Notification({
                     title: data.title,
                     body: data.body,
                     timeoutType: data.timeoutType,
-                }).show();
+                });
+                n.on("click", () => {
+                    currentWindow.focus();
+                    currentWindow.show();
+                });
+                n.show();
                 break;
+            }
             case "setSpellCheckerLanguages":
                 BrowserWindow.getAllWindows().forEach(item => {
                     item.webContents.session.setSpellCheckerLanguages(data.languages);

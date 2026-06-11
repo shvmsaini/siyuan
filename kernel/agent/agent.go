@@ -24,10 +24,14 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/88250/gulu"
+	"github.com/siyuan-note/logging"
 
 	"github.com/sashabaranov/go-openai"
 	"github.com/siyuan-note/filelock"
@@ -43,12 +47,14 @@ const systemPrompt = `You are a SiYuan AI assistant. You help users manage their
 - Notebook: a top-level container holding documents. Use notebook.list to see all notebooks. Specify notebook ID when creating documents.
 - hPath (human-readable path): the title-based path shown in the document tree, e.g. "/Diary/2024/June". The "path" parameter in document tools (document.create, document.move, document.list) refers to hPath, not the internal ID-based filesystem path. When a document is renamed, its hPath changes but its ID stays the same.
 - Document vs block move: document.move performs full document relocation — it moves a document (and its children) to a new parent hPath in a notebook. Requires: id, notebook, path. The notebook ID can be found via document.get (field: Box). block.move repositions a single block under a new parent block — use this for moving content blocks, not entire documents.
+- Dailynote (daily note/diary/journal): a special document created by the dailynote tool that follows the notebook's daily note save path. When the user asks to write or create a diary, daily note, or journal entry, always use dailynote.create (not document.create). dailynote.create creates or retrieves today's daily note for the given notebook; use dailynote.append/prepend to add content to it.
 
 ## Tool Usage Patterns
 - Finding information: search.fulltext (keyword) → block.get (by ID) to read full content. For semantic search use search.semantic.
 - Exploring structure: document.list (see child documents under an hPath) → document.get (read document metadata and content) → block.get_children (list blocks inside a document) → block.get (read a specific block). Use breadcrumb to trace a block's location path.
 - Creating content: document.create specifies the target notebook and hPath to create a document → block.append/prepend/insert to add blocks into the document. Use dataType "markdown" for text content.
-- Modifying content: block.update with a block's ID and new markdown content.
+- Creating diary/dailynote: dailynote.create with notebook ID to create or open today's daily note → dailynote.append/prepend to add content. Do not use document.create for diary/dailynote requests.
+- Modifying content: block.update replaces a single block's content with new markdown. To insert multiple new blocks into a document, use block.append/block.prepend (add to parent) or block.insert (add between siblings). Do NOT use block.update to add new blocks.
 - Organizing: document.move (full document relocation to a new hPath, needs notebook ID from document.get). document.rename changes a document's title (hPath follows). block.move repositions a single block under a new parent — for content blocks, not entire documents. document.delete removes a document by ID.
 - Attributes/properties: use attr.get/set to read/write custom attributes on any block. Use database tools for spreadsheets/attribute views.
 
@@ -57,7 +63,24 @@ const systemPrompt = `You are a SiYuan AI assistant. You help users manage their
 - Provide context: when mentioning documents or blocks, include their titles and IDs so the user can reference them.
 - Be concise: summarize key findings rather than repeating large amounts of content.
 - Use markdown formatting for readability: bullet points, headings, code blocks for technical content.
+- When writing code blocks, always specify the programming language after the opening fence (e.g. python, javascript, go) to enable syntax highlighting.
+- Use $...$ for inline formulas and $$...$$ for block formulas.
+- Refer to the product as "SiYuan", never "SiYuan Note".
 - Do not fabricate information. If you don't know something or can't find it in the user's notes, say so honestly instead of making up an answer. Search and verify before claiming facts.
+
+## SiYuan User Guide
+- SiYuan has a built-in user guide notebook that documents all supported features.
+  Notebook IDs by language:
+  - 简体中文: "20210808180117-czj9bvb"
+  - 繁體中文: "20211226090932-5lcq56f"
+  - 日本語: "20240530133126-axarxgx"
+  - English and other languages: "20210808180117-6v0mkxr"
+- When a user asks whether SiYuan supports a feature or how to use a feature:
+  1. Use notebook.list to check if the appropriate user guide notebook is already open (listed). If it is, skip step 2 and go directly to step 3.
+  2. If not already open, use notebook.open to open the appropriate user guide notebook for the user's language.
+  3. Use search.fulltext to search the user guide for relevant documentation.
+  4. If found, cite the content. If not found, honestly tell the user the feature may not be supported.
+- Do NOT invent features or UI workflows. The user guide is the authoritative source for SiYuan capabilities.
 
 ## Todo Tracking
 - For multi-step tasks (3+ distinct steps), use the todo_write tool to create a structured task list before starting work. This helps the user see your progress.
@@ -66,6 +89,12 @@ const systemPrompt = `You are a SiYuan AI assistant. You help users manage their
 - Mark a task as in_progress before starting work on it, and completed immediately after finishing.
 - Update the todo list whenever status changes — call todo_write with the updated list.
 - Skip todo_write for simple single-step requests. Only use it when there is meaningful multi-step work to track.
+
+## Debugging
+- When the user reports an error, problem, or unexpected behavior, first use the file tool to read the SiYuan log at "temp/siyuan.log" (relative to the workspace) to find error messages and context.
+- Use offset=-200 and limit=200 to read the last 200 lines of the log first. If more context is needed, adjust the offset to read earlier lines.
+- The log file may contain stack traces, error codes, and timestamps that help pinpoint the issue.
+- After reading the log, summarize the relevant errors before attempting any fixes.
 
 ## Safety
 - Confirm before deleting documents, blocks, or data.
@@ -135,6 +164,7 @@ type AgentEvent struct {
 	CompletionTokens int
 	RetryAttempt     int
 	RetryMax         int
+	SnapshotID       string
 }
 
 type UserMessage struct {
@@ -159,15 +189,32 @@ type Reference struct {
 	Title string `json:"title"`
 }
 
+type checkpointThinkingStep struct {
+	Reasoning        string              `json:"reasoning"`
+	Text             string              `json:"text"`
+	ToolCalls        []checkpointBriefTC `json:"toolCalls"`
+	ReasoningContent string              `json:"reasoningContent"`
+}
+
+type checkpointBriefTC struct {
+	Name   string `json:"name"`
+	Result string `json:"result,omitempty"`
+}
+
 type agentCheckpoint struct {
-	ID               string         `json:"id"`
-	Title            string         `json:"title"`
-	Messages         []AgentMessage `json:"messages"`
-	PromptTokens     int            `json:"promptTokens"`
-	CompletionTokens int            `json:"completionTokens"`
-	TotalDuration    int64          `json:"totalDuration"`
-	CreatedAt        int64          `json:"createdAt"`
-	UpdatedAt        int64          `json:"updatedAt"`
+	ID               string                   `json:"id"`
+	Title            string                   `json:"title"`
+	Titled           bool                     `json:"titled"`
+	Messages         []AgentMessage           `json:"messages"`
+	Entries          []json.RawMessage        `json:"entries,omitempty"`
+	PromptTokens     int                      `json:"promptTokens"`
+	CompletionTokens int                      `json:"completionTokens"`
+	TotalDuration    int64                    `json:"totalDuration"`
+	CreatedAt        int64                    `json:"createdAt"`
+	UpdatedAt        int64                    `json:"updatedAt"`
+	MessageHistory   []string                 `json:"messageHistory,omitempty"`
+	ThinkingSteps    []checkpointThinkingStep `json:"thinkingSteps,omitempty"`
+	Snapshots        []string                 `json:"snapshots,omitempty"`
 }
 
 func AgentChat(ctx context.Context, client *openai.Client, model string, sessionID string, history []UserMessage, language string, references []Reference, confirmTimeout time.Duration, maxRetries int) <-chan AgentEvent {
@@ -177,7 +224,8 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 		defer close(ch)
 		defer func() {
 			if r := recover(); r != nil {
-				sendEvent(ch, AgentEvent{Type: "error", Error: fmt.Sprintf("internal error: %v", r)})
+				logging.LogErrorf("agent chat panic: %v\n%s", r, logging.ShortStack())
+				sendEvent(ch, AgentEvent{Type: "error", Error: kernelModel.Conf.Language(28)})
 			}
 		}()
 
@@ -192,6 +240,7 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 		alwaysAllow := map[string]bool{}
 		var doomLoop doomLoopTracker
 		var compactCount int
+		var snapshotIDs []string
 
 		checkpointMsgs := make([]AgentMessage, 0, len(history))
 		for _, h := range history {
@@ -233,13 +282,15 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 					sendEvent(ch, AgentEvent{Type: "thinking", Reasoning: fmt.Sprintf("context limit reached, compacting to last %d turns...", keepTurns)})
 					continue
 				}
-				sendEvent(ch, AgentEvent{Type: "error", Error: "API request failed: " + streamErr.Error()})
-				saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime)
-				return
+		logging.LogErrorf("agent API request failed: %s", streamErr.Error())
+		sendEvent(ch, AgentEvent{Type: "error", Error: kernelModel.Conf.Language(28)})
+		saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
+			return
 			}
 
-			var contentBuilder strings.Builder
-			var aggregatedToolCalls []openai.ToolCall
+		var contentBuilder strings.Builder
+		var reasoningBuilder strings.Builder
+		var aggregatedToolCalls []openai.ToolCall
 
 			for {
 				resp, recvErr := stream.Recv()
@@ -247,8 +298,9 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 					if recvErr == io.EOF {
 						break
 					}
-					sendEvent(ch, AgentEvent{Type: "error", Error: "Stream error: " + recvErr.Error()})
-					return
+			logging.LogErrorf("agent stream error: %s", recvErr.Error())
+			sendEvent(ch, AgentEvent{Type: "error", Error: kernelModel.Conf.Language(28)})
+			return
 				}
 
 				select {
@@ -264,6 +316,7 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 					}
 
 					if choice.Delta.ReasoningContent != "" {
+						reasoningBuilder.WriteString(choice.Delta.ReasoningContent)
 						sendEvent(ch, AgentEvent{Type: "reasoning", Token: choice.Delta.ReasoningContent})
 					}
 
@@ -294,9 +347,10 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 
 			if len(aggregatedToolCalls) > 0 {
 				messages = append(messages, openai.ChatCompletionMessage{
-					Role:      openai.ChatMessageRoleAssistant,
-					Content:   contentBuilder.String(),
-					ToolCalls: aggregatedToolCalls,
+					Role:             openai.ChatMessageRoleAssistant,
+					Content:          contentBuilder.String(),
+					ReasoningContent: reasoningBuilder.String(),
+					ToolCalls:        aggregatedToolCalls,
 				})
 
 				checkpointMsg := AgentMessage{
@@ -312,6 +366,7 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 				checkpointMsgs = append(checkpointMsgs, checkpointMsg)
 				assistantIdx := len(checkpointMsgs) - 1
 
+				snapshotCreated := false
 				for i, tc := range aggregatedToolCalls {
 					args := parseToolArgs(tc.Function.Arguments)
 					action := ""
@@ -366,7 +421,7 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 								ToolCallID: tc.ID,
 							})
 							checkpointMsgs[assistantIdx].ToolCalls[i].Result = rejectionMsg
-							saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime)
+							saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
 							continue
 						}
 
@@ -374,6 +429,22 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 							alwaysAllow[tc.Function.Name+"::"+action] = true
 						}
 					}
+
+				if !snapshotCreated && action != "" && !safeActions[action] && !(tc.Function.Name == "repo" && action == "create") {
+					id, err := kernelModel.IndexRepo("AI agent auto snapshot")
+					if err != nil {
+						logging.LogErrorf("agent auto snapshot failed: %s", err)
+						sendEvent(ch, AgentEvent{
+							Type:  "error",
+							Error: "auto snapshot failed, operation aborted: " + err.Error(),
+						})
+						saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
+						return
+					}
+					snapshotIDs = append(snapshotIDs, id)
+					snapshotCreated = true
+					sendEvent(ch, AgentEvent{Type: "snapshot", SnapshotID: id})
+				}
 
 					var resultStr string
 					if tc.Function.Name == "question" {
@@ -418,19 +489,22 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 					doomLoop = doomLoopTracker{}
 				}
 
-				saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime)
+				saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
 				continue
 			}
 
 			content := contentBuilder.String()
-			checkpointMsgs = append(checkpointMsgs, AgentMessage{Role: "assistant", Content: content})
-			saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime)
+			if content != "" {
+				checkpointMsgs = append(checkpointMsgs, AgentMessage{Role: "assistant", Content: content})
+			}
+			saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
 			if content == "" {
 				content = " "
 			}
 			messages = append(messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: content,
+				Role:             openai.ChatMessageRoleAssistant,
+				Content:          content,
+				ReasoningContent: reasoningBuilder.String(),
 			})
 
 			sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion})
@@ -439,40 +513,36 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 		}
 
 		sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion})
-		saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime)
+		saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs)
 		sendEvent(ch, AgentEvent{Type: "done"})
 	}()
 
 	return ch
 }
 
-func GenerateTitle(client *openai.Client, model string, msg string) string {
-	runes := []rune(msg)
-	if len(runes) > 500 {
-		msg = string(runes[:500])
-	}
+func GenerateTitle(client *openai.Client, model string, userMsg string) string {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model: model,
 		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: "Generate a short conversation title (max 10 words) based on the user's first message. Return ONLY the title, no quotes, no punctuation at the end."},
-			{Role: openai.ChatMessageRoleUser, Content: msg},
+			{Role: openai.ChatMessageRoleSystem, Content: "You are a title generator. Below is the first message of a conversation. Write a concise title (under 12 words) that summarizes the topic. Output ONLY the title, no other text. Reply in the same language as the user's message."},
+			{Role: openai.ChatMessageRoleUser, Content: "Conversation starts with: " + userMsg},
 		},
-		MaxTokens: 30,
+		MaxCompletionTokens: 50,
 	})
 	if err != nil || len(resp.Choices) == 0 {
-		runes = []rune(msg)
+		runes := []rune(userMsg)
 		if len(runes) > 30 {
 			return string(runes[:30]) + "..."
 		}
-		return msg
+		return userMsg
 	}
 	title := strings.TrimSpace(resp.Choices[0].Message.Content)
 	if title == "" {
-		runes = []rune(msg)
+		runes := []rune(userMsg)
 		if len(runes) > 30 {
 			return string(runes[:30]) + "..."
 		}
-		return msg
+		return userMsg
 	}
 	return title
 }
@@ -480,7 +550,7 @@ func GenerateTitle(client *openai.Client, model string, msg string) string {
 var safeActions = map[string]bool{
 	"get": true, "get_kramdown": true, "get_children": true, "breadcrumb": true,
 	"tree_stat": true,
-	"list":      true, "search_docs": true, "fulltext": true, "backlinks": true,
+	"list":      true, "read": true, "search_docs": true, "fulltext": true, "backlinks": true,
 	"mentions": true, "labels": true, "status": true, "version": true,
 	"current_time": true, "workspace": true, "md": true, "query": true,
 }
@@ -556,7 +626,8 @@ func buildMessages(history []UserMessage, language string, references []Referenc
 		prompt += "Use the skill tool to load a skill when a task matches its description."
 	}
 
-	prompt += "\n\nReply in " + langName(language) + "."
+	prompt += "\n\nReply in " + util.I18nTerm(language, "_label") + "."
+	prompt += "\n\nIn the user's language, a daily note is called: " + util.I18nTerm(language, "dailyNote") + ". When the user asks to write or create this, use dailynote.create, not document.create."
 	if len(references) > 0 {
 		prompt += "\n\nThe user has referenced the following content blocks:\n"
 		for _, ref := range references {
@@ -580,54 +651,7 @@ func buildMessages(history []UserMessage, language string, references []Referenc
 	return messages
 }
 
-func langName(lang string) string {
-	switch lang {
-	case "zh_CN":
-		return "Chinese (简体中文)"
-	case "zh_CHT":
-		return "Traditional Chinese (繁體中文)"
-	case "ja_JP":
-		return "Japanese"
-	case "ko_KR":
-		return "Korean"
-	case "fr_FR":
-		return "French"
-	case "de_DE":
-		return "German"
-	case "es_ES":
-		return "Spanish"
-	case "it_IT":
-		return "Italian"
-	case "pt_BR":
-		return "Portuguese"
-	case "ru_RU":
-		return "Russian"
-	case "ar_SA":
-		return "Arabic"
-	case "he_IL":
-		return "Hebrew"
-	case "hi_IN":
-		return "Hindi"
-	case "id_ID":
-		return "Indonesian"
-	case "nl_NL":
-		return "Dutch"
-	case "pl_PL":
-		return "Polish"
-	case "th_TH":
-		return "Thai"
-	case "tr_TR":
-		return "Turkish"
-	case "uk_UA":
-		return "Ukrainian"
-	case "sk_SK":
-		return "Slovak"
-	default:
-		return "English"
-	}
-}
-
-func saveCheckpoint(sessionID string, messages []AgentMessage, promptTokens int, completionTokens int, startTime int64) {
+func saveCheckpoint(sessionID string, messages []AgentMessage, promptTokens int, completionTokens int, startTime int64, snapshotIDs []string) {
 	if sessionID == "" {
 		return
 	}
@@ -641,28 +665,45 @@ func saveCheckpoint(sessionID string, messages []AgentMessage, promptTokens int,
 		TotalDuration:    time.Now().UnixMilli() - startTime,
 		CreatedAt:        startTime,
 		UpdatedAt:        time.Now().UnixMilli(),
+		Snapshots:         snapshotIDs,
 	}
 
-	dir := filepath.Join(util.DataDir, "storage", "ai", "agent", "sessions")
+	dir := filepath.Join(util.DataDir, "storage", "ai", "agent", "sessions", sessionID)
 	_ = os.MkdirAll(dir, 0755)
 
-	path := filepath.Join(dir, sessionID+".json")
+	path := filepath.Join(dir, "session.json")
 	existing, err := os.ReadFile(path)
 	if err == nil {
 		var old agentCheckpoint
-		if json.Unmarshal(existing, &old) == nil && old.Title != "" && old.Title != "AI Agent" {
-			cp.Title = old.Title
+		if gulu.JSON.UnmarshalJSON(existing, &old) == nil {
+			if old.Titled {
+				cp.Title = old.Title
+				cp.Titled = true
+			}
 		}
 		if old.CreatedAt > 0 {
 			cp.CreatedAt = old.CreatedAt
 		}
+		if len(old.MessageHistory) > 0 {
+			cp.MessageHistory = old.MessageHistory
+		}
+		if len(old.ThinkingSteps) > 0 {
+			cp.ThinkingSteps = old.ThinkingSteps
+		}
+		if len(old.Entries) > 0 {
+			cp.Entries = old.Entries
+		}
+		if len(old.Snapshots) > 0 {
+			cp.Snapshots = old.Snapshots
+		}
 	}
 
-	data, err := json.MarshalIndent(cp, "", "  ")
+	data, err := gulu.JSON.MarshalIndentJSON(cp, "", "\t")
 	if err != nil {
 		return
 	}
 	_ = filelock.WriteFile(path, data)
+	UpdateSessionIndex(sessionID, cp.Title, cp.CreatedAt, cp.UpdatedAt)
 }
 
 func createStreamWithRetry(ctx context.Context, client *openai.Client, req openai.ChatCompletionRequest, maxRetries int, ch chan<- AgentEvent) (*openai.ChatCompletionStream, error) {
@@ -753,6 +794,6 @@ func backoffDuration(attempt int) time.Duration {
 	if base <= 1*time.Second {
 		return base
 	}
-	jitter := time.Duration(rand.Int64N(int64(base) * 40 / 100)) - time.Duration(base*20/100)
+	jitter := time.Duration(rand.Int64N(int64(base)*40/100)) - time.Duration(base*20/100)
 	return base + jitter
 }

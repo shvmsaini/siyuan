@@ -36,7 +36,7 @@ import {matchHotKey} from "../util/hotKey";
 import {hideElements} from "../ui/hideElements";
 import {electronUndo} from "../undo";
 import {previewTemplate, toolbarKeyToMenu} from "./util";
-import {hideMessage, showMessage} from "../../dialog/message";
+import {showMessage} from "../../dialog/message";
 import {InlineMath} from "./InlineMath";
 import {InlineMemo} from "./InlineMemo";
 import {mathRender} from "../render/mathRender";
@@ -813,7 +813,7 @@ export class Toolbar {
             }
         }
         nodeElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
-        updateTransaction(protyle, nodeElement.getAttribute("data-node-id"), nodeElement.outerHTML, html);
+        updateTransaction(protyle, nodeElement, html);
         nodeElement.querySelectorAll("wbr").forEach(item => {
             item.remove();
         });
@@ -1021,8 +1021,7 @@ export class Toolbar {
                     formData.append("file", blob);
                     formData.append("type", "image/svg+xml");
                     fetchPost("/api/export/exportAsFile", formData, (response) => {
-                        saveExportFile(response.data.file);
-                        hideMessage(msgId);
+                        saveExportFile(response.data.file, msgId);
                     });
                 });
                 return;
@@ -1036,8 +1035,7 @@ export class Toolbar {
                         formData.append("file", blob);
                         formData.append("type", "image/png");
                         fetchPost("/api/export/exportAsFile", formData, (response) => {
-                            saveExportFile(response.data.file);
-                            hideMessage(msgId);
+                            saveExportFile(response.data.file, msgId);
                         });
                     });
                 });
@@ -1210,7 +1208,7 @@ export class Toolbar {
 
             if (!noChange && nodeElement.outerHTML !== html) {
                 nodeElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
-                updateTransaction(protyle, id, nodeElement.outerHTML, html);
+                updateTransaction(protyle, nodeElement, html);
             }
         };
         this.subElement.style.zIndex = (++window.siyuan.zIndex).toString();
@@ -1740,7 +1738,7 @@ export class Toolbar {
                 currentRange.extractContents();
                 focusByWbr(nodeElement, currentRange);
                 focusByRange(currentRange);
-                updateTransaction(protyle, nodeElement.getAttribute("data-node-id"), nodeElement.outerHTML, oldHTML);
+                updateTransaction(protyle, nodeElement, oldHTML);
                 this.subElement.classList.add("fn__none");
             } else if (action === "paste") {
                 focusByRange(getEditorRange(nodeElement));
@@ -1899,6 +1897,7 @@ export class Toolbar {
                     highlightRender(nodeElement);
                 }
                 nodeElement.setAttribute("updated", dayjs().format("YYYYMMDDHHmmss"));
+                nodeElement.setAttribute(Constants.ATTRIBUTE_EDITING, "true");
                 doOperations.push({
                     id,
                     data: nodeElement.outerHTML,
