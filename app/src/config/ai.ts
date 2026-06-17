@@ -1,11 +1,11 @@
 import {fetchPost} from "../util/fetch";
 
 function getDefaultModel() {
-    const p = window.siyuan.config.ai.providers?.[0];
+    const p = window.siyuan.config.ai.providers[0];
     if (!p) {
         return {name: ""};
     }
-    const m = p.models?.[0];
+    const m = p.models[0];
     if (!m) {
         return {name: ""};
     }
@@ -13,15 +13,15 @@ function getDefaultModel() {
 }
 
 function getDefaultProvider() {
-    const p = window.siyuan.config.ai.providers?.[0];
+    const p = window.siyuan.config.ai.providers[0];
     if (!p) {
         return {apiKey: "", baseURL: "https://api.openai.com/v1", requestTimeout: 30};
     }
     return p;
 }
 
-function getDefaultChat() {
-    return window.siyuan.config.ai.chat || {
+function getDefaultEditing() {
+    return window.siyuan.config.ai.editing || {
         maxHistoryMessages: 7,
         temperature: 1.0,
         maxCompletionTokens: 0,
@@ -33,7 +33,7 @@ export const ai = {
     genHTML: () => {
         const model = getDefaultModel();
         const prov = getDefaultProvider();
-        const chat = getDefaultChat();
+        const editing = getDefaultEditing();
         const agent = window.siyuan.config.ai.agent || {sessionTimeout: 600, confirmTimeout: 120, maxRetries: 3};
         let responsiveHTML = "";
         /// #if MOBILE
@@ -71,19 +71,19 @@ export const ai = {
 <div class="b3-label">
     ${window.siyuan.languages.apiMaxTokens}
     <div class="fn__hr"></div>
-    <input class="b3-text-field fn__flex-center fn__block" type="number" step="1" min="0" id="chatMaxCompletionTokens" value="${chat.maxCompletionTokens || 0}"/>
+    <input class="b3-text-field fn__flex-center fn__block" type="number" step="1" min="0" id="chatMaxCompletionTokens" value="${editing.maxCompletionTokens || 0}"/>
     <div class="b3-label__text">${window.siyuan.languages.apiMaxTokensTip}</div>
 </div>
 <div class="b3-label">
     ${window.siyuan.languages.apiTemperature}
     <div class="fn__hr"></div>
-    <input class="b3-text-field fn__flex-center fn__block" type="number" step="0.1" min="0" max="2" id="chatTemperature" value="${chat.temperature || 1.0}"/>
+    <input class="b3-text-field fn__flex-center fn__block" type="number" step="0.1" min="0" max="2" id="chatTemperature" value="${editing.temperature || 1.0}"/>
     <div class="b3-label__text">${window.siyuan.languages.apiTemperatureTip}</div>
 </div>
 <div class="b3-label">
     ${window.siyuan.languages.apiMaxContexts}
     <div class="fn__hr"></div>
-    <input class="b3-text-field fn__flex-center fn__block" type="number" step="1" min="1" max="64" id="chatMaxHistoryMessages" value="${chat.maxHistoryMessages || 7}"/>
+    <input class="b3-text-field fn__flex-center fn__block" type="number" step="1" min="1" max="64" id="chatMaxHistoryMessages" value="${editing.maxHistoryMessages || 7}"/>
     <div class="b3-label__text">${window.siyuan.languages.apiMaxContextsTip}</div>
 </div>
 <div class="b3-label">
@@ -118,7 +118,7 @@ export const ai = {
         ${window.siyuan.languages.apiBaseURL}
         <div class="b3-label__text">${window.siyuan.languages.apiBaseURLTip}</div>
         <span class="fn__hr"></span>
-        <input class="b3-text-field fn__block" id="apiBaseURL" value="${prov.baseURL || "https://api.openai.com/v1"}"/>
+        <input class="b3-text-field fn__block" id="apiBaseURL" value="${prov.baseURL || ""}"/>
     </div>
 </div>
 <div class="fn__flex b3-label">
@@ -158,7 +158,7 @@ export const ai = {
         <div class="b3-label__text">${window.siyuan.languages.apiMaxTokensTip}</div>
     </div>
     <span class="fn__space"></span>
-    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="1" min="0" id="chatMaxCompletionTokens" value="${chat.maxCompletionTokens || 0}"/>
+    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="1" min="0" id="chatMaxCompletionTokens" value="${editing.maxCompletionTokens || 0}"/>
 </div>
 <div class="fn__flex b3-label">
     <div class="fn__flex-1">
@@ -166,7 +166,7 @@ export const ai = {
         <div class="b3-label__text">${window.siyuan.languages.apiTemperatureTip}</div>
     </div>
     <span class="fn__space"></span>
-    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="0.1" min="0" max="2" id="chatTemperature" value="${chat.temperature || 1.0}"/>
+    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="0.1" min="0" max="2" id="chatTemperature" value="${editing.temperature || 1.0}"/>
 </div>
 <div class="fn__flex b3-label">
     <div class="fn__flex-1">
@@ -174,7 +174,7 @@ export const ai = {
         <div class="b3-label__text">${window.siyuan.languages.apiMaxContextsTip}</div>
     </div>
     <span class="fn__space"></span>
-    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="1" min="1" max="64" id="chatMaxHistoryMessages" value="${chat.maxHistoryMessages || 7}"/>
+    <input class="b3-text-field fn__flex-center fn__size200" type="number" step="1" min="1" max="64" id="chatMaxHistoryMessages" value="${editing.maxHistoryMessages || 7}"/>
 </div>
 <div class="fn__flex b3-label">
     <div class="fn__flex-1">
@@ -222,23 +222,34 @@ export const ai = {
         }
         ai.element.querySelectorAll("input, select").forEach((item) => {
             item.addEventListener("change", () => {
-                const providers = window.siyuan.config.ai.providers || [];
-                const firstProvider = providers[0] || {apiKey: "", baseURL: "https://api.openai.com/v1", requestTimeout: 30, models: []};
-                const firstModel = firstProvider.models?.[0] || {name: ""};
-                const chat = window.siyuan.config.ai.chat || {maxHistoryMessages: 7, temperature: 1.0, maxCompletionTokens: 0};
+                const providers = window.siyuan.config.ai.providers;
+                const firstProvider: Config.IProvider = providers[0] ?? {
+                    id: "",
+                    apiKey: "",
+                    baseURL: "",
+                    requestTimeout: 30,
+                    enabled: true,
+                    models: [] as Config.IModel[],
+                };
+                const firstModel = firstProvider.models[0] ?? {id: "", name: "", enabled: true};
+                const editing = window.siyuan.config.ai.editing;
                 fetchPost("/api/setting/setAI", {
                     providers: [{
+                        id: firstProvider.id,
+                        enabled: firstProvider.enabled,
                         apiKey: (ai.element.querySelector("#apiKey") as HTMLInputElement)?.value || firstProvider.apiKey || "",
-                        baseURL: (ai.element.querySelector("#apiBaseURL") as HTMLInputElement)?.value || firstProvider.baseURL || "https://api.openai.com/v1",
+                        baseURL: (ai.element.querySelector("#apiBaseURL") as HTMLInputElement)?.value || firstProvider.baseURL || "",
                         requestTimeout: parseInt((ai.element.querySelector("#apiTimeout") as HTMLInputElement)?.value) || firstProvider.requestTimeout || 30,
                         models: [{
+                            id: firstModel.id,
+                            enabled: firstModel.enabled,
                             name: (ai.element.querySelector("#apiModel") as HTMLInputElement)?.value || firstModel.name || "",
                         }]
                     }],
-                    chat: {
+                    editing: {
                         maxCompletionTokens: parseInt((ai.element.querySelector("#chatMaxCompletionTokens") as HTMLInputElement)?.value) || 0,
-                        temperature: parseFloat((ai.element.querySelector("#chatTemperature") as HTMLInputElement)?.value) || chat.temperature || 1.0,
-                        maxHistoryMessages: parseInt((ai.element.querySelector("#chatMaxHistoryMessages") as HTMLInputElement)?.value) || chat.maxHistoryMessages || 7,
+                        temperature: parseFloat((ai.element.querySelector("#chatTemperature") as HTMLInputElement)?.value) || editing.temperature || 1.0,
+                        maxHistoryMessages: parseInt((ai.element.querySelector("#chatMaxHistoryMessages") as HTMLInputElement)?.value) || editing.maxHistoryMessages || 7,
                     },
                     agent: {
                         sessionTimeout: parseInt((ai.element.querySelector("#agentTimeout") as HTMLInputElement)?.value) || 600,
