@@ -449,6 +449,7 @@ func SearchRefBlock(id, rootID, keyword string, beforeLen int, isSquareBrackets,
 
 	prependNotebookNameInHPath(ret)
 	filterSelfHPath(ret)
+	ret = filterListParentBlock(ret)
 	return
 }
 
@@ -461,6 +462,85 @@ func filterSelfHPath(blocks []*Block) {
 			b.HPath = strings.TrimSuffix(b.HPath, path.Base(b.HPath))
 		}
 	}
+}
+
+func filterListParentBlock(blocks []*Block) []*Block {
+	// 搜索结果列表排除父级块（其子项已在结果中）Exclude parent blocks from search results (their items are already in results)
+	if 1 >= len(blocks) {
+		return blocks
+	}
+
+	matchedIDs := make(map[string]bool, len(blocks))
+	parentMap := make(map[string]string, len(blocks))
+	currIDs := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		matchedIDs[b.ID] = true
+		parentMap[b.ID] = b.ParentID
+		if b.ParentID != "" {
+			currIDs = append(currIDs, b.ParentID)
+		}
+	}
+
+	parentIDsToRemove := make(map[string]bool)
+	visited := make(map[string]bool)
+
+	for i := 0; i < 100 && len(currIDs) > 0; i++ {
+		var toProcess []string
+		for _, id := range currIDs {
+			if !visited[id] {
+				visited[id] = true
+				toProcess = append(toProcess, id)
+			}
+		}
+		if len(toProcess) == 0 {
+			break
+		}
+
+		var toFetch []string
+		var nextIDs []string
+
+		for _, id := range toProcess {
+			if matchedIDs[id] {
+				parentIDsToRemove[id] = true
+				continue
+			}
+
+			if pID, ok := parentMap[id]; ok {
+				if pID != "" {
+					nextIDs = append(nextIDs, pID)
+				}
+			} else {
+				toFetch = append(toFetch, id)
+			}
+		}
+
+		if len(toFetch) > 0 {
+			fetched := sql.GetBlocks(toFetch)
+			fetchedIDs := make(map[string]bool, len(fetched))
+			for _, fb := range fetched {
+				parentMap[fb.ID] = fb.ParentID
+				fetchedIDs[fb.ID] = true
+				if fb.ParentID != "" {
+					nextIDs = append(nextIDs, fb.ParentID)
+				}
+			}
+			for _, id := range toFetch {
+				if !fetchedIDs[id] {
+					parentMap[id] = ""
+				}
+			}
+		}
+		currIDs = nextIDs
+	}
+
+	ret := make([]*Block, 0, len(blocks))
+	for _, b := range blocks {
+		if parentIDsToRemove[b.ID] && !b.IsDoc() {
+			continue
+		}
+		ret = append(ret, b)
+	}
+	return ret
 }
 
 func prependNotebookNameInHPath(blocks []*Block) {
@@ -1216,7 +1296,7 @@ func FullTextSearchBlock(query string, boxes, paths []string, types, subTypes ma
 
 	switch groupBy {
 	case 0: // 不分组
-		ret = blocks
+		ret = filterListParentBlock(blocks)
 	case 1: // 按文档分组
 		rootMap := map[string]bool{}
 		var rootIDs []string
@@ -1306,6 +1386,7 @@ func FullTextSearchBlock(query string, boxes, paths []string, types, subTypes ma
 
 	if 0 == groupBy {
 		filterSelfHPath(ret)
+		ret = filterListParentBlock(ret)
 	}
 
 	var nodeIDs []string
@@ -1660,6 +1741,7 @@ func fullTextSearchRefBlock(keyword string, beforeLen int, onlyDoc bool) (ret []
 	if 1 > len(ret) {
 		ret = []*Block{}
 	}
+	ret = filterListParentBlock(ret)
 	return
 }
 
