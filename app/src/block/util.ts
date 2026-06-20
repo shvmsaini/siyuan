@@ -40,6 +40,8 @@ export const cancelSB = async (protyle: IProtyle, nodeElement: Element, range?: 
         previousID: previousId,
         parentID,
     });
+    // 移出子块前先清理拖拽手柄，避免手柄（无 data-node-id）被遍历成 id 为空的 move 操作
+    nodeElement.querySelectorAll(".sb__resize").forEach(handle => handle.remove());
     Array.from(nodeElement.children).forEach((item, index) => {
         if (index === nodeElement.childElementCount - 1) {
             doOperations.push({
@@ -92,6 +94,24 @@ export const genSBElement = (layout: string, id?: string, attrHTML?: string) => 
     sbElement.setAttribute("data-sb-layout", layout);
     sbElement.innerHTML = attrHTML || `<div class="protyle-attr" contenteditable="false">${Constants.ZWSP}</div>`;
     return sbElement;
+};
+
+// 刷新超级块横向布局下的拖拽手柄：col 布局在每两个相邻子块间插入 sb__resize，非 col 移除全部
+export const refreshSbResize = (sbElement: Element) => {
+    if (!sbElement || !sbElement.classList.contains("sb")) {
+        return;
+    }
+    sbElement.querySelectorAll(":scope > .sb__resize").forEach(item => item.remove());
+    if (sbElement.getAttribute("data-sb-layout") !== "col") {
+        return;
+    }
+    const children = Array.from(sbElement.querySelectorAll(":scope > [data-node-id]"));
+    for (let i = 0; i < children.length - 1; i++) {
+        const handle = document.createElement("span");
+        handle.setAttribute("class", "sb__resize");
+        handle.setAttribute("contenteditable", "false");
+        children[i].after(handle);
+    }
 };
 
 export const jumpToParent = (protyle: IProtyle, nodeElement: Element, type: "parent" | "next" | "previous") => {
