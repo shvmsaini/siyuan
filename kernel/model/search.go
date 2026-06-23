@@ -449,6 +449,7 @@ func SearchRefBlock(id, rootID, keyword string, beforeLen int, isSquareBrackets,
 
 	prependNotebookNameInHPath(ret)
 	filterSelfHPath(ret)
+	ret = filterListParentBlock(ret, keyword)
 	return
 }
 
@@ -461,6 +462,190 @@ func filterSelfHPath(blocks []*Block) {
 			b.HPath = strings.TrimSuffix(b.HPath, path.Base(b.HPath))
 		}
 	}
+}
+
+func filterListParentBlock(blocks []*Block, query string) []*Block {
+	// Exclude list blocks from search results (their items are already in results)
+	// https://github.com/siyuan-note/siyuan/issues/11266
+	//
+	// Logic:
+	// Container blocks (NodeList, NodeListItem, etc.) store ALL descendant content in their "Content" field.
+	// When searching, both the container block AND its children match if the search term appears anywhere in the subtree.
+	// This creates redundant results showing both parent and child.
+	//
+	// Solution: Remove container blocks that have children in search results.
+	// The children are more specific and represent actual matches, while containers only matched due to child content.
+
+	logging.LogInfof("[filterListParentBlock] === START === Total No of blocks in results: %d", len(blocks))
+
+	// Log all blocks first
+	for i, b := range blocks {
+		logging.LogInfof("[filterListParentBlock] Block %d: ID=%s, Type=%s, ParentID=%s, FContentLen=%d, FContent=[%s], Content=[%s]",
+			i, b.ID, b.Type, b.ParentID, len(b.FContent), b.FContent, b.Content)
+	}
+
+	// Build ID to Block mapping
+	blockMap := make(map[string]*Block)
+	for _, b := range blocks {
+		blockMap[b.ID] = b
+	}
+
+	// Build parent -> children mapping (only for parent-child relationships in search results)
+	parentToChildren := make(map[string][]*Block)
+	for _, b := range blocks {
+		if b.ParentID != "" && blockMap[b.ParentID] != nil {
+			parentToChildren[b.ParentID] = append(parentToChildren[b.ParentID], b)
+		}
+	}
+
+	logging.LogInfof("[filterListParentBlock] Parent-child relationships found: %d", len(parentToChildren))
+	for parentID, children := range parentToChildren {
+		childIDs := make([]string, len(children))
+		for i, c := range children {
+			childIDs[i] = c.ID
+		}
+		logging.LogInfof("[filterListParentBlock] Parent %s has %d children: %v", parentID, len(children), childIDs)
+	}
+
+	// NEW: Check for container blocks that might be false positives
+	// These are containers where Content has marks but FContent doesn't
+	// First, log what SearchMarkLeft and SearchMarkRight actually are
+	logging.LogInfof("[filterListParentBlock] SearchMarkLeft='%s' (len=%d), SearchMarkRight='%s' (len=%d)",
+		search.SearchMarkLeft, len(search.SearchMarkLeft), search.SearchMarkRight, len(search.SearchMarkRight))
+
+	// Collect container block IDs that should be removed
+	var containerIDsToRemove []string
+
+	logging.LogInfof("[filterListParentBlock] === ANALYZING EACH BLOCK FOR MARKS ===")
+	for _, b := range blocks {
+		// Check for HTML mark tags (the actual format used in Content/FContent)
+		contentHasMarks := strings.Contains(b.Content, "<mark>") && strings.Contains(b.Content, "</mark>")
+		fcontentHasMarks := strings.Contains(b.FContent, "<mark>") && strings.Contains(b.FContent, "</mark>")
+
+		// Check if FContent actually contains the search query
+		fcontentMatchesTerm := strings.Contains(strings.ToLower(b.FContent), strings.ToLower(query))
+		contentMatchesTerm := strings.Contains(strings.ToLower(b.Content), strings.ToLower(query))
+
+		isContainer := b.Type == "NodeList" ||
+			b.Type == "NodeListItem" ||
+			b.Type == "NodeSuperBlock" ||
+			b.Type == "NodeBlockquote" ||
+			b.Type == "NodeCallout" ||
+			b.Type == "NodeAttributeView" ||
+			b.Type == "NodeHTMLBlock" ||
+			b.Type == "NodeIFrame" ||
+			b.Type == "NodeWidget" ||
+			b.Type == "NodeAudio" ||
+			b.Type == "NodeVideo"
+
+		logging.LogInfof("[filterListParentBlock] Block %s (Type=%s, IsContainer=%v): ContentHasMarks=%v, FContentHasMarks=%v, FContentMatchesQuery=%v, ContentMatchesQuery=%v, Query='%s'",
+			b.ID, b.Type, isContainer, contentHasMarks, fcontentHasMarks, fcontentMatchesTerm, contentMatchesTerm, query)
+
+		// Correct logic: Check if FContent doesn't contain the search term, but Content does
+		// This indicates the block only matched via descendants
+		if isContainer && contentMatchesTerm && !fcontentMatchesTerm {
+			logging.LogInfof("[filterListParentBlock]   >>> FALSE POSITIVE: Content has query '%s' but FContent doesn't - only matched via descendants!", query)
+			// Container only matched because of descendants - mark for removal
+			containerIDsToRemove = append(containerIDsToRemove, b.ID)
+			logging.LogInfof("[filterListParentBlock]   >>> REMOVING container %s (false positive match)", b.ID)
+		} else if isContainer && contentMatchesTerm && fcontentMatchesTerm {
+			logging.LogInfof("[filterListParentBlock]   >>> TRUE MATCH: Both Content and FContent have query '%s' - block itself matched", query)
+			// This container has its own matching content - keep it
+		} else if isContainer && !contentMatchesTerm {
+			logging.LogInfof("[filterListParentBlock]   >>> NO MATCH: Container doesn't match query '%s' (shouldn't be in results?)", query)
+			// This may be an error case - container shouldn't be in results if it doesn't match
+		}
+
+		// Log parent info
+		if b.ParentID != "" {
+			parentBlock := blockMap[b.ParentID]
+			if parentBlock != nil {
+				logging.LogInfof("[filterListParentBlock]   Parent ID %s is IN results (Type=%s)", b.ParentID, parentBlock.Type)
+			} else {
+				logging.LogInfof("[filterListParentBlock]   Parent ID %s is NOT in results", b.ParentID)
+			}
+		}
+	}
+
+	for _, b := range blocks {
+		// Check if this block has direct children in search results
+		if children, hasChildren := parentToChildren[b.ID]; hasChildren && len(children) > 0 {
+			// Check if this block is a container block
+			// Container blocks: NodeList, NodeListItem, NodeSuperBlock, NodeBlockquote, NodeCallout, NodeAttributeView, etc.
+			// NodeDocument is NOT included (documents need to be preserved as context)
+			isContainerBlock := b.Type == "NodeList" ||
+				b.Type == "NodeListItem" ||
+				b.Type == "NodeSuperBlock" ||
+				b.Type == "NodeBlockquote" ||
+				b.Type == "NodeCallout" ||
+				b.Type == "NodeAttributeView" ||
+				b.Type == "NodeHTMLBlock" ||
+				b.Type == "NodeIFrame" ||
+				b.Type == "NodeWidget" ||
+				b.Type == "NodeAudio" ||
+				b.Type == "NodeVideo"
+
+			if isContainerBlock {
+				// Heuristic: Remove containers with minimal own content
+				// Use FContent (first content) to check if block has substantial own content
+				// FContent contains block's own content (not children)
+				// If FContent is short, it's a "pure container" - remove it
+				// If FContent is substantial, keep it (might have own matching content)
+
+				fContentLength := len(strings.TrimSpace(b.FContent))
+
+				logging.LogInfof("[filterListParentBlock] Container block %s (Type=%s) has %d children, FContentLen=%d, FContent=[%s]",
+					b.ID, b.Type, len(children), fContentLength, b.FContent)
+
+// 				// Threshold: Remove containers with minimal content (less than 10 chars after trim)
+// 				// This keeps parents with substantial own content
+// 				if fContentLength < 10 {
+// 					// Pure container with minimal own content
+// 					// Only matched because of children
+// 					logging.LogInfof("[filterListParentBlock] >>> REMOVING container %s (FContentLen=%d < 10)", b.ID, fContentLength)
+					containerIDsToRemove = append(containerIDsToRemove, b.ID)
+// 				} else {
+// 					logging.LogInfof("[filterListParentBlock] >>> KEEPING container %s (FContentLen=%d >= 10)", b.ID, fContentLength)
+// 				}
+				// If fContentLength >= 10, keep the container
+				// It might have own matching content beyond children
+			} else {
+				logging.LogInfof("[filterListParentBlock] Block %s (Type=%s) has children but is NOT a container - skipping", b.ID, b.Type)
+			}
+		}
+	}
+
+	logging.LogInfof("[filterListParentBlock] Total containers to remove: %d, IDs: %v", len(containerIDsToRemove), containerIDsToRemove)
+
+	// If no container blocks need to be removed, return as-is
+	if 0 == len(containerIDsToRemove) {
+		// Log grandparent information for descendants (if parents missing)
+		logging.LogInfof("[filterListParentBlock] === GRANDPARENT ANALYSIS ===")
+		for _, b := range blocks {
+			// Find blocks that have parents NOT in results
+			if b.ParentID != "" && blockMap[b.ParentID] == nil {
+				logging.LogInfof("[filterListParentBlock] Block %s (Type=%s) has parent %s NOT in results", b.ID, b.Type, b.ParentID)
+				logging.LogInfof("[filterListParentBlock]   This parent may be a grandparent or ancestor of other blocks")
+				logging.LogInfof("[filterListParentBlock]   To see full tree structure, would need to query block tree for %s", b.ParentID)
+			}
+		}
+
+		logging.LogInfof("[filterListParentBlock] === END (no removals) === Returning %d blocks", len(blocks))
+		return blocks
+	}
+
+	// Filter out container blocks that need to be removed
+	var ret []*Block
+	for _, b := range blocks {
+		if !gulu.Str.Contains(b.ID, containerIDsToRemove) {
+			ret = append(ret, b)
+		} else {
+			logging.LogInfof("[filterListParentBlock] Filtered out block %s (Type=%s)", b.ID, b.Type)
+		}
+	}
+
+	logging.LogInfof("[filterListParentBlock] === END === Returning %d blocks (removed %d)", len(ret), len(containerIDsToRemove))
+	return ret
 }
 
 func prependNotebookNameInHPath(blocks []*Block) {
@@ -1216,7 +1401,7 @@ func FullTextSearchBlock(query string, boxes, paths []string, types, subTypes ma
 
 	switch groupBy {
 	case 0: // 不分组
-		ret = blocks
+		ret = filterListParentBlock(blocks, query)
 	case 1: // 按文档分组
 		rootMap := map[string]bool{}
 		var rootIDs []string
@@ -1306,6 +1491,7 @@ func FullTextSearchBlock(query string, boxes, paths []string, types, subTypes ma
 
 	if 0 == groupBy {
 		filterSelfHPath(ret)
+		ret = filterListParentBlock(ret, query)
 	}
 
 	var nodeIDs []string
