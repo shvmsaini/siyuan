@@ -129,7 +129,7 @@ interface IBreadcrumb {
 interface ILuteOptions extends IMarkdownConfig {
     emojis: IObject;
     emojiSite: string;
-    headingAnchor: boolean;
+    headingAnchor?: boolean;
     lazyLoadImage?: string;
 }
 
@@ -284,6 +284,8 @@ declare class Lute {
 
     public MarkdownStr(name: string, md: string): string;
 
+    public ProtylePreviewStr(name: string, md: string): string;
+
     public GetLinkDest(text: string): string;
 
     public BlockDOM2InlineBlockDOM(html: string): string;
@@ -302,7 +304,7 @@ declare class Lute {
 
     public SetArbitraryTaskListItemMarker(marker: boolean): void;
 
-    public SetDisableListItemNestedList(disable: boolean): void;
+    public SetEnsureListItemParagraph(enable: boolean): void;
 }
 
 declare const webkitAudioContext: {

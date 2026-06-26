@@ -8,7 +8,7 @@ import {Files} from "./dock/Files";
 import {Outline} from "./dock/Outline";
 import {Bookmark} from "./dock/Bookmark";
 import {Tag} from "./dock/Tag";
-import {getAllModels, getAllTabs, getAllWnds} from "./getAll";
+import {getAllEditor, getAllModels, getAllTabs, getAllWnds} from "./getAll";
 import {Asset} from "../asset";
 import {Search} from "../search";
 import {Dock} from "./dock";
@@ -22,7 +22,7 @@ import {Backlink} from "./dock/Backlink";
 import {openFileById} from "../editor/util";
 import {isWindow} from "../util/functions";
 import {showMessage} from "../dialog/message";
-import {getIdZoomInByPath} from "../util/pathName";
+import {parseUriInfo} from "../util/pathName";
 import {Custom} from "./dock/Custom";
 import {newCardModel} from "../card/newCardTab";
 import {App} from "../index";
@@ -175,9 +175,9 @@ export const exportLayout = async (options: {
     cb: () => void,
     errorExit: boolean
 }) => {
-    const editors = getAllModels().editor;
+    const editors = getAllEditor();
     for (let i = 0; i < editors.length; i++) {
-        await saveScroll(editors[i].editor.protyle);
+        await saveScroll(editors[i].protyle);
     }
     if (isWindow()) {
         const layoutJSON: any = {
@@ -190,6 +190,7 @@ export const exportLayout = async (options: {
     }
     const useElement = document.querySelector("#barDock use");
     if (!useElement) {
+        options.cb();
         return;
     }
     const layoutJSON: any = {
@@ -493,13 +494,13 @@ export const JSONToLayout = (app: App, isStart: boolean) => {
         }
     });
 
-    const idZoomIn = getIdZoomInByPath();
-    if (idZoomIn.id) {
+    const info = parseUriInfo();
+    if (info.id) {
         openFileById({
             app,
-            id: idZoomIn.id,
-            action: idZoomIn.isZoomIn ? [Constants.CB_GET_ALL, Constants.CB_GET_FOCUS] : [Constants.CB_GET_FOCUS, Constants.CB_GET_CONTEXT, Constants.CB_GET_ROOTSCROLL],
-            zoomIn: idZoomIn.isZoomIn,
+            id: info.id,
+            action: info.focus ? [Constants.CB_GET_ALL, Constants.CB_GET_FOCUS] : [Constants.CB_GET_FOCUS, Constants.CB_GET_CONTEXT, Constants.CB_GET_ROOTSCROLL],
+            zoomIn: info.focus,
         });
     } else {
         let latestTabHeaderElement: HTMLElement;
@@ -554,7 +555,11 @@ export const layoutToJSON = (layout: Layout | Wnd | Tab | Model, json: any, brea
             if (layout.element.classList.contains("fn__flex-1")) {
                 json.size = "auto";
             } else {
-                json.size = (layout.parent.direction === "tb" ? layout.element.clientHeight : layout.element.clientWidth) + "px";
+                if (layout.element.style.maxWidth && layout.parent.direction !== "tb") {
+                    json.size = layout.element.getAttribute(Constants.ATTRIBUTE_DOCK_WIDTH) + "px";
+                } else {
+                    json.size = (layout.parent.direction === "tb" ? layout.element.clientHeight : layout.element.clientWidth) + "px";
+                }
             }
         }
         json.resize = layout.resize;
@@ -703,9 +708,13 @@ export const resizeTopBar = () => {
     let afterDragElement = dragElement.nextElementSibling;
     const hideIds: string[] = [];
     while (toolbarElement.scrollWidth > toolbarElement.clientWidth + 2) {
-        hideIds.push(afterDragElement.id);
-        afterDragElement.classList.add("fn__none");
-        afterDragElement.setAttribute("data-hide", "true");
+        // 跳过默认即隐藏的元素（如桌面端 #barExit），它们本就不占溢出空间，
+        // 若为其打上 data-hide，最大化后恢复阶段会误将其显示出来
+        if (!afterDragElement.classList.contains("fn__none")) {
+            hideIds.push(afterDragElement.id);
+            afterDragElement.classList.add("fn__none");
+            afterDragElement.setAttribute("data-hide", "true");
+        }
         afterDragElement = afterDragElement.nextElementSibling;
         if (afterDragElement.id === "barMore") {
             break;
@@ -714,9 +723,11 @@ export const resizeTopBar = () => {
 
     let beforeDragElement = dragElement.previousElementSibling;
     while (toolbarElement.scrollWidth > toolbarElement.clientWidth + 2) {
-        hideIds.push(beforeDragElement.id);
-        beforeDragElement.classList.add("fn__none");
-        beforeDragElement.setAttribute("data-hide", "true");
+        if (!beforeDragElement.classList.contains("fn__none")) {
+            hideIds.push(beforeDragElement.id);
+            beforeDragElement.classList.add("fn__none");
+            beforeDragElement.setAttribute("data-hide", "true");
+        }
         beforeDragElement = beforeDragElement.previousElementSibling;
         if (beforeDragElement.id === "barWorkspace") {
             break;
@@ -1016,6 +1027,7 @@ export const addResize = (obj: Layout | Wnd, after = true) => {
 export const adjustLayout = (layout: Layout = window.siyuan.layout.centerLayout.parent) => {
     layout.children.forEach((item: Layout | Wnd) => {
         item.element.style.maxWidth = "";
+        item.element.removeAttribute(Constants.ATTRIBUTE_DOCK_WIDTH);
         if (!item.element.style.width && !item.element.classList.contains("layout__center")) {
             item.element.style.minWidth = "8px";
         } else {
@@ -1035,7 +1047,10 @@ export const adjustLayout = (layout: Layout = window.siyuan.layout.centerLayout.
             let width = layout.element.firstElementChild.classList.contains("layout__dockl") ? 8 : 0;
             layout.children.find((item: Layout | Wnd) => {
                 if (item.element.style.width && item.element.style.width !== "0px") {
-                    item.element.style.maxWidth = Math.max(Math.min(item.element.clientWidth, window.innerWidth) - 8, 64) + "px";
+                    if (!item.element.hasAttribute(Constants.ATTRIBUTE_DOCK_WIDTH)) {
+                        item.element.setAttribute(Constants.ATTRIBUTE_DOCK_WIDTH, item.element.clientWidth.toString());
+                    }
+                    item.element.style.maxWidth = Math.max(Math.min(item.element.clientWidth, window.innerWidth) - 8, 168) + "px";
                 }
                 width += item.element.clientWidth;
             });

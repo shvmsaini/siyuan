@@ -16,12 +16,47 @@ import {escapeAttr, escapeHtml} from "../util/escape";
 import {uninstall} from "../plugin/uninstall";
 import {afterLoadPlugin, loadPlugin, loadPlugins} from "../plugin/loader";
 import {useShell} from "../util/pathName";
+import {switchSettingPanelSubTab} from "./setting/mount";
 
-export const bazaar = {
+/** 集市 Tab 侧栏 / 全局搜索索引文案 */
+export const collectBazaarTabSearchStrings = (): string[] => [
+    window.siyuan.languages.bazaar,
+    window.siyuan.languages.downloaded,
+    window.siyuan.languages.plugin,
+    window.siyuan.languages.theme,
+    window.siyuan.languages.icon,
+    window.siyuan.languages.template,
+    window.siyuan.languages.widget,
+];
+
+/** 集市 Tab 挂载（面板页，不走注册表渲染） */
+export const mountBazaarTab = (root: HTMLElement, keywords?: string, app?: App) => {
+    if (root.innerHTML === "") {
+        bazaar.element = root;
+        root.innerHTML = bazaar.genHTML();
+        if (app) {
+            bazaar.bindEvent(app);
+        }
+    } else {
+        bazaar.element = root;
+    }
+    if (keywords) {
+        switchSettingPanelSubTab(root, keywords, [
+            {type: "downloaded", label: window.siyuan.languages.downloaded},
+            {type: "plugin", label: window.siyuan.languages.plugin},
+            {type: "theme", label: window.siyuan.languages.theme},
+            {type: "icon", label: window.siyuan.languages.icon},
+            {type: "template", label: window.siyuan.languages.template},
+            {type: "widget", label: window.siyuan.languages.widget},
+        ]);
+    }
+};
+
+const bazaar = {
     element: undefined as Element,
     genHTML() {
         if (!window.siyuan.config.bazaar.trust) {
-            return `<div class="fn__flex-column">
+            return `<div class="fn__flex-column" style="margin: 0 48px;">
 <div class="fn__flex-1"></div>
 <div class="b3-label">
     <div>${window.siyuan.languages.bazaarTrust}</div>
@@ -68,7 +103,7 @@ export const bazaar = {
 </div>`;
         }
         const localSort = window.siyuan.storage[Constants.LOCAL_BAZAAR];
-        const loadingHTML = `<div style="height: ${bazaar.element.clientHeight - 80}px;display: flex;align-items: center;justify-content: center;"><img src="/stage/loading-pure.svg"></div>`;
+        const loadingHTML = `<div style="height: ${bazaar.element.clientHeight - 160}px;display: flex;align-items: center;justify-content: center;"><img src="/stage/loading-pure.svg"></div>`;
         return `<div class="fn__flex-column" style="height: 100%">
 <div class="layout-tab-bar fn__flex">
     <div data-type="downloaded" class="item item--full item--focus"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.downloaded}</span><span class="fn__flex-1"></span></div>
@@ -461,7 +496,7 @@ type="checkbox">
                 const repoURL = bazaar.element.querySelector("#configBazaarReadme .item__side")?.getAttribute("data-repourl");
                 bazaar._data.downloaded.find((i) => {
                     if (i.repoURL === repoURL) {
-                        bazaar._renderReadme(bazaarType, true, i);
+                        bazaar._renderReadme(bazaarType, "downloaded", i);
                         return true;
                     }
                 });
@@ -483,7 +518,7 @@ type="checkbox">
             plugins: [] as IBazaarItem[],
         }
     },
-    _renderReadme(bazaarType: TBazaarType, isDownload: boolean, data: IBazaarItem) {
+    _renderReadme(bazaarType: TBazaarType, from: "downloaded" | "updated" | "bazaar", data: IBazaarItem) {
         const readmeElement = bazaar.element.querySelector("#configBazaarReadme") as HTMLElement;
         const urls = data.repoURL.split("/");
         urls.pop();
@@ -497,7 +532,8 @@ type="checkbox">
         if (!(bazaarType in navTitles)) {
             return;
         }
-        readmeElement.innerHTML = ` <div class="item__side" data-download="${isDownload.toString()}" data-repourl="${escapeAttr(data.repoURL)}">
+        const isDownload = from === "downloaded";
+        readmeElement.innerHTML = ` <div class="item__side" data-from="${from}" data-repourl="${escapeAttr(data.repoURL)}">
     <div class="fn__flex">
         <div style="padding-right: 8px" class="block__icon block__icon--show ariaLabel" data-position="north" data-type="goBack" aria-label="${window.siyuan.languages.back}">
             <svg><use xlink:href="#iconLeft"></use></svg>
@@ -608,10 +644,10 @@ type="checkbox">
         if (!window.siyuan.config.bazaar.trust) {
             bazaar.element.querySelector("button").addEventListener("click", () => {
                 fetchPost("/api/setting/setBazaar", {
+                    ...window.siyuan.config.bazaar,
                     trust: true,
-                    petalDisabled: window.siyuan.config.bazaar.petalDisabled
-                }, () => {
-                    window.siyuan.config.bazaar.trust = true;
+                }, (response) => {
+                    window.siyuan.config.bazaar = response.data;
                     bazaar.element.innerHTML = bazaar.genHTML();
                     bazaar.bindEvent(app);
                 });
@@ -626,8 +662,11 @@ type="checkbox">
             let pkgItem: IBazaarItem;
             if (repoElement) {
                 const repo = repoElement.getAttribute("data-repourl");
-                if (hasClosestByAttribute(repoElement, "data-type", "downloaded") ||
-                    hasClosestByAttribute(repoElement, "data-download", "true")) {
+                let sideForm;
+                if (repoElement.classList.contains("item__side")) {
+                    sideForm = repoElement.getAttribute("data-from");
+                }
+                if (hasClosestByAttribute(repoElement, "data-type", "downloaded-update") || sideForm === "updated") {
                     for (const bazaarType of ["plugins", "themes", "icons", "templates", "widgets"] as TBazaarType[]) {
                         const item = bazaar._data.update[bazaarType]?.find((i) => i.repoURL === repo);
                         if (item) {
@@ -636,15 +675,14 @@ type="checkbox">
                             break;
                         }
                     }
-                    if (!pkgType) {
-                        const activeBtn = bazaar.element.querySelector("#configBazaarDownloaded")?.previousElementSibling?.querySelector(".b3-button:not(.b3-button--outline)") as HTMLElement;
-                        if (activeBtn?.getAttribute("data-type")) {
-                            const activeBazaarType = bazaar._myType2Type(activeBtn.getAttribute("data-type"));
-                            const item = bazaar._data.downloaded.find((i) => i.repoURL === repo);
-                            if (item) {
-                                pkgType = activeBazaarType;
-                                pkgItem = item;
-                            }
+                } else if (hasClosestByAttribute(repoElement, "id", "configBazaarDownloaded") || sideForm === "downloaded") {
+                    const activeBtn = bazaar.element.querySelector("#configBazaarDownloaded")?.previousElementSibling?.querySelector(".b3-button:not(.b3-button--outline)") as HTMLElement;
+                    if (activeBtn?.getAttribute("data-type")) {
+                        const activeBazaarType = bazaar._myType2Type(activeBtn.getAttribute("data-type"));
+                        const item = bazaar._data.downloaded.find((i) => i.repoURL === repo);
+                        if (item) {
+                            pkgType = activeBazaarType;
+                            pkgItem = item;
                         }
                     }
                 } else {
@@ -826,9 +864,10 @@ type="checkbox">
                     const packageName = pkgItem.name;
                     const mode = pkgItem.modes?.toString() === "dark" ? 1 : 0;
                     if (pkgType === "icons") {
-                        fetchPost("/api/setting/setAppearance", Object.assign({}, window.siyuan.config.appearance, {
+                        fetchPost("/api/setting/setAppearance", {
+                            ...window.siyuan.config.appearance,
                             icon: packageName,
-                        }), (appearanceResponse) => {
+                        }, (appearanceResponse) => {
                             this._genMyHTML(pkgType, app, false);
                             fetchPost("/api/bazaar/getBazaarIcon", {}, response => {
                                 response.data.appearance = appearanceResponse.data;
@@ -837,12 +876,13 @@ type="checkbox">
                             });
                         });
                     } else if (pkgType === "themes") {
-                        fetchPost("/api/setting/setAppearance", Object.assign({}, window.siyuan.config.appearance, {
+                        fetchPost("/api/setting/setAppearance", {
+                            ...window.siyuan.config.appearance,
                             mode,
                             modeOS: false,
                             themeDark: mode === 1 ? packageName : window.siyuan.config.appearance.themeDark,
                             themeLight: mode === 0 ? packageName : window.siyuan.config.appearance.themeLight,
-                        }), (appearanceResponse) => {
+                        }, (appearanceResponse) => {
                             this._genMyHTML("themes", app, false);
                             fetchPost("/api/bazaar/getBazaarTheme", {}, response => {
                                 response.data.appearance = appearanceResponse.data;
@@ -928,7 +968,8 @@ type="checkbox">
                     break;
                 } else if (target.classList.contains("b3-card")) {
                     if (!hasClosestByClassName(event.target as HTMLElement, "b3-card__actions--right") && pkgItem && pkgType) {
-                        bazaar._renderReadme(pkgType, target.parentElement.id === "configBazaarDownloaded", pkgItem);
+                        bazaar._renderReadme(pkgType,
+                            target.closest('[data-type="downloaded-update"]') ? "updated" : (target.parentElement.id === "configBazaarDownloaded" ? "downloaded" : "bazaar"), pkgItem);
                     }
                     event.preventDefault();
                     event.stopPropagation();

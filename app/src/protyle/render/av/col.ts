@@ -466,6 +466,11 @@ export const bindEditEvent = (options: {
                     blockID: options.blockID
                 });
                 (options.menuElement.querySelector('[data-type="addOption"]') as HTMLInputElement).focus();
+                // 添加选项后面板增高，需按首次锚点重新定位（sticky 锁底部，顶部上移避免溢出视口）
+                const prevTop = parseFloat(options.menuElement.dataset.positionTop);
+                if (!isNaN(prevTop)) {
+                    setPosition(options.menuElement, parseFloat(options.menuElement.dataset.positionX), prevTop, 0, 0, true);
+                }
             }
         });
     }
@@ -668,7 +673,7 @@ const addAttrViewColAnimation = (options: {
         });
         const tabRect = options.blockElement.querySelector(".av__views").getBoundingClientRect();
         if (tabRect) {
-            setPosition(menuElement, tabRect.right - menuElement.clientWidth, tabRect.bottom, tabRect.height);
+            setPosition(menuElement, tabRect.right - menuElement.clientWidth, tabRect.bottom, tabRect.height, 0, true);
         }
         return;
     }
@@ -847,40 +852,26 @@ export const showColMenu = (protyle: IProtyle, blockElement: Element, cellElemen
                     id: avID,
                 }, (response) => {
                     const avData = response.data as IAV;
-                    let filter: IAVFilter;
-                    // 递归在过滤树中查找该列已存在的叶子
-                    const findFilter = (nodes: IAVFilter[]): IAVFilter => {
-                        for (const n of nodes) {
-                            if (n.filters) {
-                                const found = findFilter(n.filters);
-                                if (found) return found;
-                            } else if (n.column === colId && n.value.type === type) {
-                                return n;
-                            }
-                        }
-                        return undefined;
+                    // 始终新建一个占位条件（允许同列多条件，支持“主键包含111 OR 主键包含222”等组合）
+                    const filter: IAVFilter = {
+                        column: colId,
+                        operator: getDefaultOperatorByType(type),
+                        value: genCellValue(type, ""),
                     };
-                    filter = findFilter(getEditableFilters(avData));
-                    if (!filter) {
-                        // 新建占位条件并保存，随后打开筛选面板 inline 编辑
-                        filter = {
-                            column: colId,
-                            operator: getDefaultOperatorByType(type),
-                            value: genCellValue(type, ""),
-                        };
-                        getEditableFilters(avData).push(filter);
-                        transaction(protyle, [{
-                            action: "setAttrViewFilters",
-                            avID,
-                            data: avData.view.filters,
-                            blockID: blockElement.getAttribute("data-node-id")
-                        }], [{
-                            action: "setAttrViewFilters",
-                            avID,
-                            data: [], // undo 时移除新增条件（简化处理）
-                            blockID: blockElement.getAttribute("data-node-id")
-                        }]);
-                    }
+                    // 深拷贝旧值用于 undo，撤销时恢复完整筛选状态而非清空全部
+                    const oldFilters = JSON.parse(JSON.stringify(avData.view.filters));
+                    getEditableFilters(avData).push(filter);
+                    transaction(protyle, [{
+                        action: "setAttrViewFilters",
+                        avID,
+                        data: avData.view.filters,
+                        blockID: blockElement.getAttribute("data-node-id")
+                    }], [{
+                        action: "setAttrViewFilters",
+                        avID,
+                        data: oldFilters,
+                        blockID: blockElement.getAttribute("data-node-id")
+                    }]);
                     // 打开筛选面板，用户在内联控件中编辑（替代原 setFilter 弹层）
                     openMenuPanel({
                         protyle,
@@ -1271,7 +1262,7 @@ export const removeCol = (options: {
         options.menuElement.innerHTML = getPropertiesHTML(options.fields);
         setPosition(options.menuElement,
             options.tabRect.right - options.menuElement.clientWidth, options.tabRect.bottom,
-            options.tabRect.height);
+            options.tabRect.height, 0, true);
     }
 };
 

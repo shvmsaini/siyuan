@@ -1,16 +1,18 @@
 import {BlockPanel} from "./Panel";
 import {hasClosestBlock, hasClosestByAttribute, hasClosestByClassName,} from "../protyle/util/hasClosest";
 import {fetchPost, fetchSyncPost} from "../util/fetch";
-import {hideTooltip, showTooltip} from "../dialog/tooltip";
-import {getIdFromSYProtocol, isLocalPath} from "../util/pathName";
+import {hideTooltip, showTooltip, tooltipTargetElement} from "../dialog/tooltip";
+import {isLocalPath, parseSiYuanUriInfo} from "../util/pathName";
 import {App} from "../index";
 import {Constants} from "../constants";
 import {getCellText} from "../protyle/render/av/cell";
 import {isTouchDevice} from "../util/functions";
 import {escapeAriaLabel, escapeHtml, escapeLessThans} from "../util/escape";
+/// #if !MOBILE
 import {getInstanceById} from "../layout/util";
 import {Editor} from "../editor";
 import {Tab} from "../layout/Tab";
+/// #endif
 
 let popoverTargetElement: HTMLElement;
 // 异步获取信息后再显示 tooltip，鼠标已移走时需中断请求 https://github.com/siyuan-note/siyuan/issues/14823
@@ -139,6 +141,7 @@ export const initBlockPopover = (app: App) => {
                 }
             }
 
+            /// #if !MOBILE
             const tabElement = hasClosestByAttribute(event.target, "data-type", "tab-header");
             if (tabElement) {
                 const tab = getInstanceById(tabElement.getAttribute("data-id"));
@@ -173,6 +176,7 @@ export const initBlockPopover = (app: App) => {
                     }
                 }
             }
+            /// #endif
 
             const notebookItemElement = hasClosestByClassName(event.target, "b3-list-item__text");
             if (notebookItemElement && notebookItemElement.parentElement.getAttribute("data-type") === "navigation-root") {
@@ -209,9 +213,11 @@ export const initBlockPopover = (app: App) => {
             const tipElement = hasClosestByAttribute(event.target, "id", "tooltip", true);
             if (!tipElement) {
                 hideTooltip();
+            } else if (tooltipTargetElement && !tooltipTargetElement.contains(event.target)) {
+                // 鼠标在 #tooltip 上但已离开触发元素范围，正常隐藏
+                // 仍在触发元素范围内时不隐藏，避免 showTooltip ↔ hideTooltip 循环闪烁
+                hideTooltip();
             }
-            // 鼠标仍在 #tooltip 上时不主动隐藏，避免 showTooltip ↔ hideTooltip 循环闪烁；
-            // 待鼠标移到非 tooltip 处再由上面的分支隐藏
         }
         if (window.siyuan.config.editor.floatWindowMode === 1 || window.siyuan.shiftIsPressed) {
             clearTimeout(timeoutHide);
@@ -453,10 +459,10 @@ export const showPopover = async (app: App, showRef = false) => {
         }
     } else if (popoverTargetElement.getAttribute("data-type")?.split(" ").includes("a")) {
         // 以思源协议开头的链接
-        refDefs = [{refID: getIdFromSYProtocol(popoverTargetElement.getAttribute("data-href"))}];
+        refDefs = [{refID: parseSiYuanUriInfo(popoverTargetElement.getAttribute("data-href"))?.id ?? ""}];
     } else if (popoverTargetElement.dataset.type === "url") {
         // 在 database 的 url 列中以思源协议开头的链接
-        refDefs = [{refID: getIdFromSYProtocol(popoverTargetElement.textContent.trim())}];
+        refDefs = [{refID: parseSiYuanUriInfo(popoverTargetElement.textContent.trim())?.id ?? ""}];
     } else if (popoverTargetElement.dataset.popoverUrl) {
         // 镜像数据库
         const postResponse = await fetchSyncPost(popoverTargetElement.dataset.popoverUrl, {avID: popoverTargetElement.dataset.avId});

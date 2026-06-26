@@ -111,15 +111,16 @@ const (
 // 这些参数会并入死循环签名，避免 agent 对不同 url/query/sql 的合法连续调用被误判；
 // 同时对同一参数反复调用（真死循环）仍能正确触发终止。
 var toolSignatureKeys = map[string][]string{
-	"web_fetch":  {"url", "format"},
-	"web_search": {"query"},
-	"sql":        {"sql", "stmt"},
-	"search":     {"query", "keyword"},
-	"outline":    {"id", "doc_id"},
-	"system":     {"action"},
-	"workspace":  {"action"},
-	"sync":       {"action"},
-	"todo_write": {"todos"},
+	"web_fetch":    {"url", "format"},
+	"web_search":   {"query"},
+	"http_request": {"action", "url"},
+	"sql":          {"sql", "stmt"},
+	"search":       {"query", "keyword"},
+	"outline":      {"id", "doc_id"},
+	"system":       {"action"},
+	"workspace":    {"action"},
+	"sync":         {"action"},
+	"todo_write":   {"todos"},
 }
 
 // buildDoomSignature 用 toolName + action + 关键参数构造死循环签名。
@@ -217,6 +218,10 @@ type AgentEvent struct {
 	Error            string
 	PromptTokens     int
 	CompletionTokens int
+	LastPromptTokens int
+	TokenBreakdown   map[string]int
+	CachedTokens     int
+	ContextLimit     int
 	RetryAttempt     int
 	RetryMax         int
 	SnapshotID       string
@@ -290,18 +295,22 @@ type SessionEntryStep struct {
 }
 
 type agentCheckpoint struct {
-	ID               string         `json:"id"`
-	Title            string         `json:"title"`
-	Titled           bool           `json:"titled"`
-	Entries          []SessionEntry `json:"entries"`
-	PromptTokens     int            `json:"promptTokens"`
-	CompletionTokens int            `json:"completionTokens"`
-	TotalDuration    int64          `json:"totalDuration"`
-	CreatedAt        int64          `json:"createdAt"`
-	UpdatedAt        int64          `json:"updatedAt"`
-	MessageHistory   []string       `json:"messageHistory,omitempty"`
-	Snapshots        []string       `json:"snapshots,omitempty"`
-	AlwaysAllow      bool           `json:"alwaysAllow,omitempty"`
+	ID                    string         `json:"id"`
+	Title                 string         `json:"title"`
+	Titled                bool           `json:"titled"`
+	Entries               []SessionEntry `json:"entries"`
+	PromptTokens          int            `json:"promptTokens"`
+	CompletionTokens      int            `json:"completionTokens"`
+	TotalDuration         int64          `json:"totalDuration"`
+	CreatedAt             int64          `json:"createdAt"`
+	UpdatedAt             int64          `json:"updatedAt"`
+	MessageHistory        []string       `json:"messageHistory,omitempty"`
+	Snapshots             []string       `json:"snapshots,omitempty"`
+	AlwaysAllow           bool           `json:"alwaysAllow,omitempty"`
+	ContextTokens         int            `json:"contextTokens,omitempty"`
+	ContextTokenBreakdown map[string]int `json:"contextTokenBreakdown,omitempty"`
+	ContextCachedTokens   int            `json:"contextCachedTokens,omitempty"`
+	ContextLimit          int            `json:"contextLimit,omitempty"`
 }
 
 func AgentChat(ctx context.Context, client *openai.Client, model string, sessionID string, userMessage string, language string, references []Reference, editorCtx EditorContext, pluginActions []PluginAction, regenerate bool, confirmTimeout time.Duration, maxRetries int) <-chan AgentEvent {
@@ -320,10 +329,15 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 			mcpclient.EnsureMCPConnected(kernelModel.Conf.AI.MCP.Servers)
 		}
 
+		// 变量（非敏感）在用户消息注入对话时解析，让 LLM 看到实际值；密钥不进上下文。
+		// 在此统一解析一次，后续 checkpoint 与消息重建均使用解析后的值，保证全链路一致。
+		userMessage = kernelModel.Conf.Variables.Resolve(userMessage)
+
 		tools := convertMCPToolsToOpenAI()
 		var messages []openai.ChatCompletionMessage
 		var checkpointMsgs []AgentMessage
-		var totalPrompt, totalCompletion int
+		var totalPrompt, totalCompletion, lastPromptTokens, lastCachedTokens int
+		contextLimit := GetModelContextLimit(model)
 		startTime := time.Now().UnixMilli()
 		alwaysAllow := map[string]bool{}
 		var doomLoop doomLoopTracker
@@ -478,6 +492,13 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 				if resp.Usage != nil {
 					totalPrompt += resp.Usage.PromptTokens
 					totalCompletion += resp.Usage.CompletionTokens
+					// 记录最后一次 stream 的 prompt tokens（= 当前上下文已用），供前端底部显示。
+					lastPromptTokens = resp.Usage.PromptTokens
+					// 补读缓存命中 tokens（OpenAI PromptTokensDetails.CachedTokens，精确值）。
+					// 非 OpenAI 兼容提供商可能不返回该字段，nil 安全处理。
+					if resp.Usage.PromptTokensDetails != nil {
+						lastCachedTokens = resp.Usage.PromptTokensDetails.CachedTokens
+					}
 				}
 			}
 
@@ -719,12 +740,12 @@ func AgentChat(ctx context.Context, client *openai.Client, model string, session
 				ReasoningContent: reasoningBuilder.String(),
 			})
 
-			sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion})
+			sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion, LastPromptTokens: lastPromptTokens, TokenBreakdown: computeBreakdownIfNeeded(model, messages, tools, lastPromptTokens), CachedTokens: lastCachedTokens, ContextLimit: contextLimit})
 			sendCriticalEvent(ctx, ch, AgentEvent{Type: "done"})
 			return
 		}
 
-		sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion})
+		sendEvent(ch, AgentEvent{Type: "usage", PromptTokens: totalPrompt, CompletionTokens: totalCompletion, LastPromptTokens: lastPromptTokens, TokenBreakdown: computeBreakdownIfNeeded(model, messages, tools, lastPromptTokens), CachedTokens: lastCachedTokens, ContextLimit: contextLimit})
 		saveCheckpoint(sessionID, checkpointMsgs, totalPrompt, totalCompletion, startTime, snapshotIDs, alwaysAllow)
 		sendCriticalEvent(ctx, ch, AgentEvent{Type: "done"})
 	}()
@@ -937,7 +958,7 @@ func buildSystemPrompt(language string, references []Reference, editorCtx Editor
 
 	sb.WriteString("\n\n")
 	sb.WriteString("## Skill Management\n")
-	sb.WriteString("Use the skill tool to manage reusable skills: \"save\" (create/update; provide name + SKILL.md content with YAML frontmatter ---\\nname: ...\\ndescription: ...\\n--- and markdown body), \"remove\", \"rename\" (name + new_name), \"list\".")
+	sb.WriteString("Use the skill tool to manage reusable skills: \"save\" (create/update; provide name + SKILL.md content with YAML frontmatter ---\\nname: ...\\ndescription: ...\\n--- and markdown body), \"install\" (download & install a skill from a remote source — pass url; accepts 'owner/repo' shorthand like Tencent/WeChatReading, a full GitHub URL, a raw SKILL.md URL, or a release zip URL; installed globally), \"remove\", \"rename\" (name + new_name), \"list\". When the user says \"install xxx skill\" or pastes a command like \"npx skills add owner/repo -g\", extract the owner/repo and call skill.install.")
 
 	sb.WriteString("\n\nReply in ")
 	sb.WriteString(util.I18nTerm(language, "_label"))
@@ -1031,6 +1052,42 @@ func buildInitialMessages(userMessage string, language string, references []Refe
 		{Role: openai.ChatMessageRoleSystem, Content: buildSystemPrompt(language, references, editorCtx, pluginActions)},
 		{Role: openai.ChatMessageRoleUser, Content: userMessage},
 	}
+}
+
+// skillsSegmentTokens 估算 system prompt 中 <available_skills> 段（含引导句）的 token 数。
+// 该段在 buildSystemPrompt 内部拼成大字符串，这里独立重建同等内容计数，用于分类统计切出 skills 类。
+func skillsSegmentTokens(counter *tokenCounter) int {
+	if counter == nil {
+		return 0
+	}
+	skills := util.DiscoverSkills()
+	if len(skills) == 0 {
+		return 0
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\n<available_skills>\n")
+	for _, s := range skills {
+		sb.WriteString("  <skill>\n")
+		sb.WriteString("    <name>")
+		sb.WriteString(s.Name)
+		sb.WriteString("</name>\n")
+		sb.WriteString("    <description>")
+		sb.WriteString(s.Description)
+		sb.WriteString("</description>\n")
+		sb.WriteString("  </skill>\n")
+	}
+	sb.WriteString("</available_skills>\n\n")
+	sb.WriteString("Use the skill tool to load a skill when a task matches its description.")
+	return counter.count(sb.String())
+}
+
+// computeBreakdownIfNeeded 计算 10 类 token 分类明细。counter 初始化失败时返回 nil（前端兜底）。
+func computeBreakdownIfNeeded(model string, messages []openai.ChatCompletionMessage, tools []openai.Tool, realPromptTokens int) map[string]int {
+	counter, err := getTokenCounter(model)
+	if err != nil || counter == nil {
+		return nil
+	}
+	return computeTokenBreakdown(counter, messages, tools, skillsSegmentTokens(counter), realPromptTokens)
 }
 
 func loadCheckpoint(sessionID string) *agentCheckpoint {
@@ -1223,6 +1280,21 @@ func saveCheckpoint(sessionID string, messages []AgentMessage, promptTokens int,
 		}
 		if len(old.Snapshots) > 0 {
 			cp.Snapshots = old.Snapshots
+		}
+		// 回填前端写入的上下文 token 统计字段，避免后端 checkpoint 擦除它们（双写覆盖修复）。
+		// 后端 saveCheckpoint 在流式中途/结束都会触发，但这些统计值是 stream 结束时才由前端写入的，
+		// 所以后端只保留磁盘已有值，不自行计算。
+		if old.ContextTokens > 0 {
+			cp.ContextTokens = old.ContextTokens
+		}
+		if len(old.ContextTokenBreakdown) > 0 {
+			cp.ContextTokenBreakdown = old.ContextTokenBreakdown
+		}
+		if old.ContextCachedTokens > 0 {
+			cp.ContextCachedTokens = old.ContextCachedTokens
+		}
+		if old.ContextLimit > 0 {
+			cp.ContextLimit = old.ContextLimit
 		}
 	}
 

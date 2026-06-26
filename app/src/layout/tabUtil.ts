@@ -27,12 +27,12 @@ import {fetchPost} from "../util/fetch";
 import {isWindow} from "../util/functions";
 import {Wnd} from "./Wnd";
 
-export const setTabPosition = (onlyPadding = false) => {
+export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const isWindowMode = isWindow();
     const wndsTemp: Wnd[] = [];
     if (isWindowMode) {
         getAllWnds(window.siyuan.layout.layout, wndsTemp);
-    } else if (window.siyuan.config.appearance.hideToolbar) {
+    } else if (window.siyuan.config.appearance.hideToolbar || onlyClear) {
         if (!window.siyuan.layout.centerLayout) {
             return;
         }
@@ -47,8 +47,8 @@ export const setTabPosition = (onlyPadding = false) => {
     const toolbarDragElement = document.getElementById("drag");
     const toolbarDragRect = toolbarDragElement?.getBoundingClientRect() || {left: 0, right: 0};
     if (toolbarDragElement) {
-        toolbarDragElement.style.removeProperty("--b3-toolbar-drag-left");
-        toolbarDragElement.style.removeProperty("--b3-toolbar-drag-right");
+        toolbarDragElement.style.setProperty("--b3-toolbar-drag-left", "8px");
+        toolbarDragElement.style.setProperty("--b3-toolbar-drag-right", "8px");
     }
     wndsTemp.forEach(item => {
         const headerElement = item.headersElement.parentElement;

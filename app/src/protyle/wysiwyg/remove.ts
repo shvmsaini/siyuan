@@ -1,15 +1,12 @@
-import {
-    focusBlock,
-    focusByRange,
-    focusByWbr,
-    getSelectionOffset,
-    setLastNodeRange
-} from "../util/selection";
+import {focusBlock, focusByRange, focusByWbr, getSelectionOffset, setLastNodeRange} from "../util/selection";
 import {
     getContenteditableElement,
     getLastBlock,
-    getNextBlock, getParentBlock,
-    getPreviousBlock, getPreviousBlockSibling, getSbChildBlockCount,
+    getNextBlock,
+    getParentBlock,
+    getPreviousBlock,
+    getPreviousBlockSibling,
+    getSbChildBlockCount,
     getTopAloneElement,
     getTopEmptyElement,
     hasNextSibling,
@@ -26,9 +23,11 @@ import {scrollCenter} from "../../util/highlightById";
 import {isMobile} from "../../util/functions";
 import {mathRender} from "../render/mathRender";
 import {hasClosestBlock, hasClosestByClassName, isInEmbedBlock} from "../util/hasClosest";
+/// #if !MOBILE
 import {getInstanceById} from "../../layout/util";
 import {Tab} from "../../layout/Tab";
 import {Backlink} from "../../layout/dock/Backlink";
+/// #endif
 import {fetchPost, fetchSyncPost} from "../../util/fetch";
 import {onGet} from "../util/onGet";
 import {setFold} from "../util/blockFold";
@@ -170,6 +169,30 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
                     };
                 }
                 topElement.remove();
+                // 删除列表项内容块后，若该列表项仅剩子列表而无内容块，需补一个空段落
+                // 避免"列表项下直接挂列表"的非法结构 https://github.com/siyuan-note/siyuan/issues/17892
+                const liChildren = Array.from(topParentElement.children);
+                // 首个子块是列表块时，说明列表项下直接挂列表，需补一个空段落作为内容块
+                // https://github.com/siyuan-note/siyuan/issues/17892
+                const firstBlock = liChildren.find(item => item.hasAttribute("data-node-id") &&
+                    !item.classList.contains("protyle-action") && !item.classList.contains("protyle-attr"));
+                if (topParentElement.classList.contains("li") && firstBlock?.classList.contains("list")) {
+                    const emptyID = Lute.NewNodeID();
+                    const emptyElement = genEmptyElement(false, false, emptyID);
+                    // 空段落插到列表标记之后、首个子块之前，与服务端 doInsert 通过 nextID 定位的位置一致
+                    liChildren.find(item => item.classList.contains("protyle-action"))?.after(emptyElement);
+                    deletes.push({
+                        action: "insert",
+                        id: emptyID,
+                        data: emptyElement.outerHTML,
+                        nextID: firstBlock.getAttribute("data-node-id"),
+                        parentID: topParentElement.getAttribute("data-node-id"),
+                    });
+                    inserts.push({
+                        action: "delete",
+                        id: emptyID,
+                    });
+                }
             }
         }
         Object.keys(unfoldData).forEach(item => {
@@ -321,12 +344,14 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
             range.insertNode(document.createElement("wbr"));
         }
         blockParentElement.insertAdjacentElement("beforebegin", blockElement);
+        // 跳过 sb__resize 手柄取前一个块，避免超级块内引述块首删除时 previousID 为手柄导致位置错
+        const previousID = getPreviousBlockSibling(blockElement)?.getAttribute("data-node-id");
         if (isCallout ? blockParentElement.querySelector(".callout-content").childElementCount === 0 :
             blockParentElement.childElementCount === 1) {
             transaction(protyle, [{
                 action: "move",
                 id: blockElement.getAttribute("data-node-id"),
-                previousID: blockElement.previousElementSibling?.getAttribute("data-node-id"),
+                previousID,
                 parentID: getParentBlock(blockParentElement).getAttribute("data-node-id") || protyle.block.parentID
             }, {
                 action: "delete",
@@ -335,7 +360,7 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
                 action: "insert",
                 id: blockParentElement.getAttribute("data-node-id"),
                 data: blockParentElement.outerHTML,
-                previousID: blockElement.previousElementSibling?.getAttribute("data-node-id"),
+                previousID,
                 parentID: getParentBlock(blockElement).getAttribute("data-node-id") || protyle.block.parentID
             }, {
                 action: "move",
@@ -347,13 +372,18 @@ export const removeBlock = async (protyle: IProtyle, blockElement: Element, rang
             transaction(protyle, [{
                 action: "move",
                 id: blockElement.getAttribute("data-node-id"),
-                previousID: blockElement.previousElementSibling?.getAttribute("data-node-id"),
+                previousID,
                 parentID: getParentBlock(blockParentElement).getAttribute("data-node-id") || protyle.block.parentID
             }], [{
                 action: "move",
                 id: blockElement.getAttribute("data-node-id"),
                 parentID: blockParentElement.getAttribute("data-node-id")
             }]);
+        }
+        // 引述块移出/删除后，若所在容器是超级块则刷新拖拽手柄（清残留）
+        const sbAncestor = getParentBlock(blockElement);
+        if (sbAncestor?.classList.contains("sb")) {
+            refreshSbResize(sbAncestor);
         }
         if (type === "Delete") {
             moveToPrevious(blockElement, range, true);
@@ -660,7 +690,7 @@ export const removeImage = (imgSelectElement: Element, nodeElement: HTMLElement,
     }
 };
 
-const removeLi = (protyle: IProtyle, blockElement: Element, range: Range, isDelete = false) => {
+const removeLi = async (protyle: IProtyle, blockElement: Element, range: Range, isDelete = false) => {
     if (!blockElement.parentElement.previousElementSibling && blockElement.parentElement.nextElementSibling && blockElement.parentElement.nextElementSibling.classList.contains("protyle-attr")) {
         listOutdent(protyle, [blockElement.parentElement], range, isDelete, blockElement);
         return;
@@ -745,7 +775,6 @@ const removeLi = (protyle: IProtyle, blockElement: Element, range: Range, isDele
             data: listHTML,
             id: listElement.getAttribute("data-node-id"),
         });
-        transaction(protyle, doOperations, undoOperations);
         if (listElement.parentElement.classList.contains("sb") &&
             listElement.parentElement.getAttribute("data-sb-layout") === "col") {
             const selectsElement: Element[] = [];
@@ -757,14 +786,19 @@ const removeLi = (protyle: IProtyle, blockElement: Element, range: Range, isDele
                 }
                 previousElement = previousElement.previousElementSibling;
             }
-            turnsIntoOneTransaction({
+            // 合并到同一个 transaction，避免新超级块 id 在第二个 transaction 中找不到
+            const mergeOperations = await turnsIntoOneTransaction({
                 protyle,
                 selectsElement: selectsElement.reverse(),
                 type: "BlocksMergeSuperBlock",
                 level: "row",
                 unfocus: true,
+                getOperations: true,
             });
+            doOperations.push(...mergeOperations.doOperations);
+            undoOperations.splice(0, 0, ...mergeOperations.undoOperations);
         }
+        transaction(protyle, doOperations, undoOperations);
         focusByWbr(protyle.wysiwyg.element, range);
         return;
     }

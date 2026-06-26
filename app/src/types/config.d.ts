@@ -74,6 +74,11 @@ declare namespace Config {
          */
         readonly: boolean;
         repo: IRepo;
+        /**
+         * Global secrets store, referenced via {{secrets.NAME}} placeholders.
+         * 全局密钥库，通过 {{secrets.NAME}} 占位符引用
+         */
+        secrets: ISecrets;
         search: ISearch;
         /**
          * Whether to display the changelog for this release version
@@ -89,6 +94,11 @@ declare namespace Config {
          * Community user data (Encrypted)
          */
         userData: string;
+        /**
+         * Global variables store, referenced via {{vars.NAME}} placeholders.
+         * 全局变量库，通过 {{vars.NAME}} 占位符引用
+         */
+        variables: IVariables;
     }
 
     /**
@@ -227,10 +237,6 @@ declare namespace Config {
          */
         codeBlockThemeLight: string;
         /**
-         * List of installed dark themes
-         */
-        darkThemes: string[];
-        /**
          * Whether to hide toolbar
          */
         hideToolbar: boolean;
@@ -257,7 +263,11 @@ declare namespace Config {
         /**
          * List of installed light themes
          */
-        lightThemes: string[];
+        lightThemes: { label: string; name: string }[];
+        /**
+         * List of installed dark themes
+         */
+        darkThemes: { label: string; name: string }[];
         /**
          * The current theme mode
          * - `0`: Light theme
@@ -483,6 +493,10 @@ declare namespace Config {
          * The font weight used in the editor, 0 means not set
          */
         fontWeight: number;
+        /**
+         * Label shown in Settings for the selected editor font (e.g. PostScript name + subfamily). May be empty; falls back to fontFamily in UI when empty.
+         */
+        fontFamilyDisplay: string;
         /**
          * The font size used in the editor
          */
@@ -1428,6 +1442,38 @@ declare namespace Config {
     }
 
     /**
+     * A named secret. The value is AES-encrypted at rest on the kernel side.
+     */
+    export interface ISecret {
+        name: string;
+        value: string;
+    }
+
+    /**
+     * Global secrets store. Referenced via {{secrets.NAME}} placeholders by the
+     * agent http_request tool and MCP server headers.
+     */
+    export interface ISecrets {
+        items: ISecret[];
+    }
+
+    /**
+     * A named variable. The value is stored in plain text (non-sensitive data).
+     */
+    export interface IVariable {
+        name: string;
+        value: string;
+    }
+
+    /**
+     * Global variables store. Referenced via {{vars.NAME}} placeholders by the
+     * agent http_request tool and MCP server headers.
+     */
+    export interface IVariables {
+        items: IVariable[];
+    }
+
+    /**
      * SiYuan workspace content statistics
      */
     export interface IStat {
@@ -1504,7 +1550,7 @@ declare namespace Config {
          * - `3`: Network storage service using WebDAV protocol
          * - `4`: Local file system
          */
-        provider: number;
+        provider: 0 | 2 | 3 | 4;
         s3: ISyncS3;
         /**
          * The prompt information of the last synchronization

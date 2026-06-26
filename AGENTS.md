@@ -23,6 +23,7 @@ SiYuan spans several repos. This repo (`siyuan`) holds the kernel + Electron/web
 | `siyuan` | **This repo** — kernel + Electron/web/tablet UI |
 | `siyuan-android` / `siyuan-ios` / `siyuan-harmony` | Native apps wrapping the gomobile kernel; build steps differ per platform — see each project's README |
 | `siyuan-chrome` | Browser extension (web clipper); talks to the running kernel over HTTP only |
+| `petal` | SiYuan Plugin API declaration (the plugin system is named "petal"); consumed by plugins, not a kernel Go dependency |
 | `lute` | Markdown/Kramdown AST engine — the editor + `.sy` format; also the source of the bundled `lute.min.js` (a GopherJS build served to the frontend). **Lives under `$GOPATH/src/github.com/88250/lute`, not as a sibling repo** |
 | `dejavu` | Data repo / sync engine (encrypted snapshots) |
 | `riff` | Spaced-repetition (SRS) flashcard scheduler |
@@ -128,7 +129,7 @@ Four webpack configs each emit a separate bundle to `app/stage/build/{app,deskto
 2. **Comments:** Describe what the code does, not what it replaced — don't reference the old implementation in comments
 3. **Comments:** Write comments in Chinese
 4. **Markdown:** Do not hand-wrap; keep each line (paragraphs, table rows, list items, etc.) on a single line
-5. **TypeScript/JavaScript:** Semicolons required, use double quotes
+5. **TypeScript/JavaScript:** Semicolons required, use double quotes, indent with spaces
 
 ---
 

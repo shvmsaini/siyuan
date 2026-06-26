@@ -3,15 +3,14 @@ import {Menus} from "./menus";
 import {Model} from "./layout/Model";
 import {onGetConfig} from "./boot/onGetConfig";
 import {initBlockPopover} from "./block/popover";
-import {account} from "./config/account";
+import {onSetaccount} from "./config/tabs/accountUi";
 import {addScript, addScriptSync} from "./protyle/util/addScript";
 import {genUUID} from "./util/genID";
 import {fetchGet, fetchPost} from "./util/fetch";
 import {
     addBaseURL,
     getDocDisplayName,
-    getIdFromSYProtocol,
-    isSYProtocol,
+    parseSiYuanUriInfo,
     redirectToCheckAuth,
     setNoteBook
 } from "./util/pathName";
@@ -31,7 +30,7 @@ import {
 import {initMessage, showMessage} from "./dialog/message";
 import {getAllModels, getAllTabs} from "./layout/getAll";
 import {getLocalStorage, isChromeBrowser, isInMobileApp} from "./protyle/util/compatibility";
-import {getSearch, isBrowser} from "./util/functions";
+import {isBrowser} from "./util/functions";
 import {checkPublishServiceClosed} from "./util/processMessage";
 import {hideAllElements} from "./protyle/ui/hideElements";
 import {loadPlugins, reloadPlugin} from "./plugin/loader";
@@ -43,7 +42,7 @@ import {ipcRenderer} from "electron";
 /// #endif
 import {getDockByType} from "./layout/tabUtil";
 import {Tag} from "./layout/dock/Tag";
-import {updateAppearance} from "./config/util/updateAppearance";
+import {appearanceConfigApi} from "./config/tabs/appearanceRuntime";
 import {renderSnippet} from "./config/util/snippets";
 import {setBodyHighlight} from "./util/assets";
 import {reloadSync} from "./util/reloadSync";
@@ -76,7 +75,7 @@ export class App {
                             redirectToCheckAuth();
                             break;
                         case "setAppearance":
-                            updateAppearance(data.data);
+                            appearanceConfigApi.apply(data.data);
                             break;
                         case "setSnippet":
                             window.siyuan.config.snippet = data.data;
@@ -256,7 +255,7 @@ export class App {
                     fetchPost("/api/setting/getCloudUser", {}, userResponse => {
                         window.siyuan.user = userResponse.data;
                         onGetConfig(response.data.start, this);
-                        account.onSetaccount();
+                        onSetaccount();
                         setTitle("", true);
                         initMessage();
                         /// #if BROWSER && !MOBILE
@@ -276,13 +275,13 @@ export class App {
 const siyuanApp = new App();
 
 window.openFileByURL = (openURL) => {
-    if (openURL && isSYProtocol(openURL)) {
-        const isZoomIn = getSearch("focus", openURL) === "1";
+    const blockInfo = parseSiYuanUriInfo(openURL);
+    if (blockInfo != null) {
         openFileById({
             app: siyuanApp,
-            id: getIdFromSYProtocol(openURL),
-            action: isZoomIn ? [Constants.CB_GET_ALL, Constants.CB_GET_FOCUS] : [Constants.CB_GET_FOCUS, Constants.CB_GET_CONTEXT, Constants.CB_GET_ROOTSCROLL],
-            zoomIn: isZoomIn
+            id: blockInfo.id,
+            action: blockInfo.focus ? [Constants.CB_GET_ALL, Constants.CB_GET_FOCUS] : [Constants.CB_GET_FOCUS, Constants.CB_GET_CONTEXT, Constants.CB_GET_ROOTSCROLL],
+            zoomIn: blockInfo.focus
         });
         return true;
     }

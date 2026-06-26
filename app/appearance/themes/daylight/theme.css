@@ -17,8 +17,8 @@
     --b3-theme-on-primary: #fff;
     --b3-theme-on-secondary: #fff;
     --b3-theme-on-background: #222;
-    --b3-theme-on-surface: #5f6368;
-    --b3-theme-on-surface-light: rgba(95, 99, 104, .68);
+    --b3-theme-on-surface: rgba(0, 0, 0, .6);
+    --b3-theme-on-surface-light: rgba(0, 0, 0, .6);
     --b3-theme-on-error: #fff;
 
     /* 字体 */
@@ -58,7 +58,7 @@
     --b3-list-icon-hover: rgba(33, 34, 36, .1);
 
     /* 菜单 */
-    --b3-menu-background: #f9f9fa;
+    --b3-menu-background: var(--b3-theme-background);
 
     /* 提示 */
     --b3-tooltips-background: #312f35;
@@ -121,8 +121,8 @@
     --b3-highlight-background: #ffff00;
     --b3-highlight-current-background: #ff9632;
 
-    /* 下拉菜单 */
-    --b3-select-background: url("data:image/svg+xml;utf8,<svg fill='rgba(95, 99, 104, .68)' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>") no-repeat right 2px center var(--b3-theme-background);
+    /* 下拉菜单：底色与菜单保持一致，避免 select 嵌入菜单时出现色块 */
+    --b3-select-background: url("data:image/svg+xml;utf8,<svg fill='rgba(95, 99, 104, .68)' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>") no-repeat right 2px center var(--b3-menu-background);
 
     /* switch */
     --b3-switch-background: #e1e3e1;
@@ -156,7 +156,7 @@
     --b3-graph-doc-point: #202124;
     --b3-graph-tag-point: #dbf32f;
     --b3-graph-asset-point: #05c091;
-    --b3-graph-line: #5f6368;
+    --b3-graph-line: rgba(0, 0, 0, .6);
     --b3-graph-ref-line: #d23f31;
     --b3-graph-tag-line: #5f6b06;
     --b3-graph-tag-tag-line: #dbf32f;
@@ -175,7 +175,7 @@
     --b3-protyle-inline-link-color: #4285f4;
     --b3-protyle-inline-mark-background: rgb(252, 212, 126);
     --b3-protyle-inline-mark-color: #202124;
-    --b3-protyle-inline-tag-color: #5f6368;
+    --b3-protyle-inline-tag-color: rgba(0, 0, 0, .6);
     --b3-protyle-inline-blockref-color: #8957e5;
     --b3-protyle-inline-fileref-color: #21862e;
 

@@ -803,6 +803,10 @@ export class WYSIWYG {
                     !nextElement || sbElement.getAttribute("data-sb-layout") !== "col") {
                     return;
                 }
+                const oldHTMLs = {
+                    prev: previousElement.outerHTML,
+                    next: nextElement.outerHTML,
+                };
                 const x = event.clientX;
                 const sbWidth = sbElement.clientWidth;
                 // 使用 getBoundingClientRect 获取精确浮点宽度，避免 clientWidth（整数取整）作为
@@ -813,17 +817,50 @@ export class WYSIWYG {
                 const handleStyle = getComputedStyle(target);
                 const gapPx = target.offsetWidth + parseFloat(handleStyle.marginLeft) + parseFloat(handleStyle.marginRight);
                 const minWidth = 20;
-                target.classList.add("sb__resize--drag");
-                // 拖拽时禁止换行，避免最后一个子块因宽度溢出而换行
-                sbElement.style.flexWrap = "nowrap";
                 // @ts-ignore
                 previousElement.style.webkitUserModify = "read-only";
                 // @ts-ignore
                 nextElement.style.webkitUserModify = "read-only";
+                // 为所有子块创建右上角百分比提示
+                const sbChildren = Array.from(sbElement.querySelectorAll(":scope > [data-node-id]")) as HTMLElement[];
+                const gapHalve = gapPx / 2 + 1;
+                const tips: {el: HTMLElement, child: HTMLElement}[] = [];
+                sbChildren.forEach(child => {
+                    child.style.position = "relative";
+                    const tip = document.createElement("span");
+                    tip.className = "sb__resize-tip protyle-icon protyle-icon--first protyle-icon--last";
+                    child.appendChild(tip);
+                    tips.push({el: tip, child});
+                });
+                // 份额池：每个子块占 100 的整数份额，总和恒为 100
+                // 从子块 style.width 的 calc 百分比恢复，无 width 的用实测宽度估算
+                // 最大余数法取整确保总和精确 = 100，跨拖拽起始显示一致
+                const rawPcts = sbChildren.map(child => {
+                    const m = child.style.width.match(/^calc\(([\d.]+)%/);
+                    return m ? parseFloat(m[1]) : child.getBoundingClientRect().width / sbWidth * 100;
+                });
+                const totalRaw = rawPcts.reduce((s, p) => s + p, 0) || 1;
+                const normalized = rawPcts.map(p => p / totalRaw * 100);
+                const shares = normalized.map(p => Math.floor(p));
+                const deficit = 100 - shares.reduce((s, p) => s + p, 0);
+                const remainders = normalized
+                    .map((p, i) => ({i, frac: p - Math.floor(p)}))
+                    .sort((a, b) => b.frac - a.frac);
+                for (let k = 0; k < deficit && k < remainders.length; k++) {
+                    shares[remainders[k].i]++;
+                }
+                const leftIdx = sbChildren.indexOf(previousElement);
+                const rightIdx = sbChildren.indexOf(nextElement);
+                const updateTips = () => {
+                    tips.forEach(({el}, i) => {
+                        el.textContent = `${shares[i]}%`;
+                    });
+                };
                 // 记录最终拖拽宽度，供 mouseup 精确计算百分比，避免从 clientWidth（整数取整）
                 // 反推导致每次拖拽累积误差
                 let finalLeft = oldLeftWidth;
                 let finalRight = oldRightWidth;
+                updateTips();
                 documentSelf.onmousemove = (moveEvent: MouseEvent) => {
                     // 左右两块等量交换宽度，不影响其他子块
                     const delta = moveEvent.clientX - x;
@@ -844,10 +881,21 @@ export class WYSIWYG {
                     previousElement.style.flex = "none";
                     nextElement.style.width = newRightWidth + "px";
                     nextElement.style.flex = "none";
+                    // 更新份额池：左块份额 = 当前宽度占比 × 100（整数），右块 = 100 - 左块 - 其他块份额
+                    const newLeftShare = Math.max(1, Math.round(newLeftWidth / sbWidth * 100));
+                    const othersSum = shares.reduce((s, p, i) => i === leftIdx || i === rightIdx ? s : s + p, 0);
+                    shares[leftIdx] = newLeftShare;
+                    shares[rightIdx] = Math.max(1, 100 - othersSum - newLeftShare);
+                    updateTips();
                 };
-                documentSelf.onmouseup = () => {
-                    target.classList.remove("sb__resize--drag");
-                    sbElement.style.flexWrap = "";
+                documentSelf.onmouseup = (mouseupEvent) => {
+                    tips.forEach(({child, el}) => {
+                        el.remove();
+                        // 还原 position（若子块原本无 position 则清除）
+                        if (!child.getAttribute("style") || child.style.position === "relative") {
+                            child.style.position = "";
+                        }
+                    });
                     // @ts-ignore
                     previousElement.style.webkitUserModify = "";
                     // @ts-ignore
@@ -857,12 +905,13 @@ export class WYSIWYG {
                     documentSelf.ondragstart = null;
                     documentSelf.onselectstart = null;
                     documentSelf.onselect = null;
-                    const sbChildren = Array.from(sbElement.querySelectorAll(":scope > [data-node-id]")) as HTMLElement[];
-                    const oldHTMLs = sbChildren.map(c => c.outerHTML);
+                    // 仅点击未拖拽，不产生 transaction，避免无意义的更新
+                    if (Math.abs(x - mouseupEvent.clientX) <= 0) {
+                        return;
+                    }
                     // 只调整左右两块（手柄两侧），其他子块不动，避免影响未拖拽的块
                     // 使用 mousemove 记录的精确实时宽度（finalLeft/finalRight）反推百分比，
                     // gapHalve 已含 +1px 余量防止亚像素换行，无需再用 *99 缩放（会造成累积收缩）
-                    const gapHalve = gapPx / 2 + 1;
                     let leftPct = Math.round((finalLeft + gapHalve) / sbWidth * 1000) / 10;
                     let rightPct = Math.round((finalRight + gapHalve) / sbWidth * 1000) / 10;
                     // 防溢出：两块百分比之和超过 99.5% 时等比压缩到 99%，留 1% 缓冲防换行
@@ -877,8 +926,18 @@ export class WYSIWYG {
                     nextElement.style.width = `calc(${rightPct}% - ${gapHalve}px)`;
                     previousElement.setAttribute("updated", updated);
                     nextElement.setAttribute("updated", updated);
-                    updateTransaction(protyle, previousElement, oldHTMLs[sbChildren.indexOf(previousElement)]);
-                    updateTransaction(protyle, nextElement, oldHTMLs[sbChildren.indexOf(nextElement)]);
+                    // 合并为单个 transaction，确保撤销时两侧宽度同时恢复
+                    transaction(protyle, [
+                        {
+                            action: "update",
+                            id: previousElement.getAttribute("data-node-id"),
+                            data: previousElement.outerHTML
+                        },
+                        {action: "update", id: nextElement.getAttribute("data-node-id"), data: nextElement.outerHTML},
+                    ], [
+                        {action: "update", id: previousElement.getAttribute("data-node-id"), data: oldHTMLs.prev},
+                        {action: "update", id: nextElement.getAttribute("data-node-id"), data: oldHTMLs.next},
+                    ]);
                 };
                 this.preventClick = true;
                 event.preventDefault();
@@ -1949,9 +2008,6 @@ export class WYSIWYG {
             const range = getSelection().getRangeAt(0);
             if (this.element === range.startContainer || this.element.contains(range.startContainer)) {
                 protyle.toolbar.range = range.cloneRange();
-                // 失焦前保存滚动位置，供 zoomOut 在重载后恢复，防止浏览器焦点切换导致 scrollTop 归零
-                // https://github.com/siyuan-note/siyuan/issues/17886
-                (protyle as any).scrollTopBeforeBlur = protyle.contentElement.scrollTop;
             }
         });
 
@@ -2786,13 +2842,41 @@ export class WYSIWYG {
             }
         });
 
-        this.element.addEventListener("dblclick", (event: MouseEvent & { target: HTMLElement }) => {
-            if (event.target.tagName === "IMG" && !event.target.classList.contains("emoji")) {
+        this.element.addEventListener("dblclick", (event: MouseEvent) => {
+            const target = event.target as HTMLElement;
+            // 双击超级块拖拽手柄，均分所有列宽
+            if (target.classList.contains("sb__resize")) {
+                const doOperations: IOperation[] = [];
+                const undoOperations: IOperation[] = [];
+                Array.from(target.parentElement.children).forEach((item: HTMLElement) => {
+                    // 没有任何子块设过 width，无需重置
+                    if (!item.style.width && !item.style.flex) {
+                        return;
+                    }
+                    if (!item.style.width && !item.style.flex) {
+                        return;
+                    }
+                    const oldHTML = item.outerHTML;
+                    item.style.width = "";
+                    item.style.flex = "";
+                    const id = item.getAttribute("data-node-id");
+                    doOperations.push({action: "update", id, data: item.outerHTML});
+                    undoOperations.push({action: "update", id, data: oldHTML});
+                });
+
+                if (doOperations.length > 0) {
+                    transaction(protyle, doOperations, undoOperations);
+                }
+                event.stopPropagation();
+                event.preventDefault();
+                return;
+            }
+            if (target.tagName === "IMG" && !target.classList.contains("emoji")) {
                 previewDocImage((event.target as HTMLElement).getAttribute("src"), protyle.block.rootID);
                 return;
             }
             // https://github.com/siyuan-note/siyuan/issues/12691
-            const diagramElement = getDiagramBlock(hasClosestBlock(event.target) as HTMLElement);
+            const diagramElement = getDiagramBlock(hasClosestBlock(target) as HTMLElement);
             if (diagramElement) {
                 previewDiagram(diagramElement);
                 event.stopPropagation();

@@ -184,7 +184,7 @@ export const updateAssetCell = (options: {
         });
         const cellRect = (options.cellElements[0].classList.contains("custom-attr__avvalue") ? options.cellElements[0] : options.protyle.wysiwyg.element.querySelector(`.av__cell[data-id="${options.cellElements[0].dataset.id}"]`)).getBoundingClientRect();
         setTimeout(() => {
-            setPosition(menuElement, cellRect.left, cellRect.bottom, cellRect.height);
+            setPosition(menuElement, cellRect.left, cellRect.bottom, cellRect.height, 0, true);
         }, Constants.TIMEOUT_LOAD);  // 等待图片加载
     }
 };
@@ -366,8 +366,8 @@ export const editAssetItem = (options: {
         }).element);
     }
     if (linkAddress?.startsWith("assets/")) {
-        window.siyuan.menus.menu.append(new MenuItem(exportAsset(linkAddress)).element);
-        window.siyuan.menus.menu.append(new MenuItem(writeAssetToClipboard(linkAddress)).element);
+        window.siyuan.menus.menu.append(new MenuItem(exportAsset(decodeURI(linkAddress))).element);
+        window.siyuan.menus.menu.append(new MenuItem(writeAssetToClipboard(decodeURI(linkAddress))).element);
     }
     const rect = options.rect;
     /// #if MOBILE

@@ -6,15 +6,16 @@ import {getSearch, isMobile, isValidCustomAttrName} from "../util/functions";
 import {isLocalPath, movePathTo, moveToPath, pathPosix} from "../util/pathName";
 import {MenuItem} from "./Menu";
 import {onExport, saveExport} from "../protyle/export";
+import {exportMarkdownZip} from "../protyle/export/exportMd";
 import {
     isInAndroid,
     isInHarmony,
     isInIOS,
     isInMobileApp,
-    openByMobile,
     saveExportFile,
     writeText
 } from "../protyle/util/compatibility";
+import {openByMobile} from "../editor/openLink";
 import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {hideMessage, showMessage} from "../dialog/message";
 import {Dialog} from "../dialog";
@@ -629,12 +630,7 @@ export const exportMd = (id: string) => {
             label: "Markdown .zip",
             icon: "iconMarkdown",
             click: () => {
-                const msgId = showMessage(window.siyuan.languages.exporting, -1);
-                fetchPost("/api/export/exportMd", {
-                    id,
-                }, response => {
-                    saveExportFile(response.data.zip, msgId);
-                });
+                exportMarkdownZip({id});
             }
         }, {
             id: "exportImage",
