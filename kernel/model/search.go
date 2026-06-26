@@ -464,6 +464,30 @@ func filterSelfHPath(blocks []*Block) {
 	}
 }
 
+func matchesWordTokens(text, query string) bool {
+    textWords := tokenize(text)
+    queryWords := tokenize(query)
+
+    for _, qw := range queryWords {
+        qw = strings.ToLower(qw)
+        matched := false
+        for _, tw := range textWords {
+            if strings.HasPrefix(strings.ToLower(tw), qw) {
+                matched = true
+                break
+            }
+        }
+        if !matched {
+            return false
+        }
+    }
+    return true
+}
+
+func tokenize(s string) []string {
+    return regexp.MustCompile(`[^\w]+`).Split(s, -1)
+}
+
 func filterListParentBlock(blocks []*Block, query string) []*Block {
 	// Exclude list blocks from search results (their items are already in results)
 	// https://github.com/siyuan-note/siyuan/issues/11266
@@ -523,8 +547,8 @@ func filterListParentBlock(blocks []*Block, query string) []*Block {
 		fcontentHasMarks := strings.Contains(b.FContent, "<mark>") && strings.Contains(b.FContent, "</mark>")
 
 		// Check if FContent actually contains the search query
-		fcontentMatchesTerm := strings.Contains(strings.ToLower(b.FContent), strings.ToLower(query))
-		contentMatchesTerm := strings.Contains(strings.ToLower(b.Content), strings.ToLower(query))
+		fcontentMatchesTerm := matchesWordTokens(strings.ToLower(b.FContent), strings.ToLower(query))
+		contentMatchesTerm := matchesWordTokens(strings.ToLower(b.Content), strings.ToLower(query))
 
 		isContainer := b.Type == "NodeList" ||
 			b.Type == "NodeListItem" ||
@@ -543,17 +567,11 @@ func filterListParentBlock(blocks []*Block, query string) []*Block {
 
 		// Correct logic: Check if FContent doesn't contain the search term, but Content does
 		// This indicates the block only matched via descendants
-		if isContainer && contentMatchesTerm && !fcontentMatchesTerm {
+		if isContainer && !fcontentMatchesTerm {
 			logging.LogInfof("[filterListParentBlock]   >>> FALSE POSITIVE: Content has query '%s' but FContent doesn't - only matched via descendants!", query)
 			// Container only matched because of descendants - mark for removal
 			containerIDsToRemove = append(containerIDsToRemove, b.ID)
 			logging.LogInfof("[filterListParentBlock]   >>> REMOVING container %s (false positive match)", b.ID)
-		} else if isContainer && contentMatchesTerm && fcontentMatchesTerm {
-			logging.LogInfof("[filterListParentBlock]   >>> TRUE MATCH: Both Content and FContent have query '%s' - block itself matched", query)
-			// This container has its own matching content - keep it
-		} else if isContainer && !contentMatchesTerm {
-			logging.LogInfof("[filterListParentBlock]   >>> NO MATCH: Container doesn't match query '%s' (shouldn't be in results?)", query)
-			// This may be an error case - container shouldn't be in results if it doesn't match
 		}
 
 		// Log parent info
